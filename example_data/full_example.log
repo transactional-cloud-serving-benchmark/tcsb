@@ -1,0 +1,109 @@
+# Generate debug commands.
+$ ./artifacts/generate_commands keyvalue gold_memory exec debug seed=4321,write_ratio=0.25,command_count=1000,key_ordering=sorted,key_len=10,val_len=10,write_batch_size=10 > commands.gold_memory.debug.txt
+
+# Inspect the first debug commands.
+$ head -n 20 commands.gold_memory.debug.txt
+0 0 0 w aaaaaaaaaa zomvtmqeym
+1 0 1 w aaaaaaaaab bomzplglwh
+2 0 2 w aaaaaaaaac oqfowotylo
+3 0 3 w aaaaaaaaad acjnyrzcem
+4 0 4 w aaaaaaaaae yvimyuxtwv
+5 0 5 w aaaaaaaaaf vvdmnutjtc
+6 0 6 w aaaaaaaaag nllvnqjphy
+7 0 7 w aaaaaaaaah hoopxadxiu
+8 0 8 w aaaaaaaaai usztinugsq
+9 0 9 w aaaaaaaaaj qdxuaglemk
+10 1 0 r aaaaaaaaac
+11 2 0 r aaaaaaaaaa
+12 3 0 r aaaaaaaaaf
+13 4 0 r aaaaaaaaaa
+14 5 0 r aaaaaaaaaa
+15 6 0 r aaaaaaaaai
+16 7 0 r aaaaaaaaai
+17 8 0 r aaaaaaaaad
+18 9 0 r aaaaaaaaaa
+19 10 0 r aaaaaaaaaa
+
+# Show that 25% of the commands are writes.
+$ cut -f 4 -d\  commands.gold_memory.debug.txt | sort | uniq -c
+    750 r
+    250 w
+
+# Generate the binary commands (note that the `gold_memory` format is valid for Mongo, too, but that may change in the near future).
+$ ./artifacts/generate_commands keyvalue gold_memory exec binary seed=4321,write_ratio=0.25,command_count=1000,key_ordering=sorted,key_len=10,val_len=10,write_batch_size=10 > commands.gold_memory.binary.dat
+
+# Check the size of the generated command file.
+$ du -h commands.gold_memory.binary.dat
+96K     commands.gold_memory.binary.dat
+
+# Spawn a gold memory server:
+$ ./artifacts/gold_memory_server full 1>/dev/null 2>&1 &
+[1] 2844
+
+# Use our generated commands for validation:
+$ cat commands.gold_memory.binary.dat | ./artifacts/gold_memory_client http://127.0.0.1:8080 on > validation0.txt
+
+# Inspect the gold memory server validation output:
+$ head validation0.txt
+aaaaaaaaac -> oqfowotylo
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaaf -> vvdmnutjtc
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaai -> usztinugsq
+aaaaaaaaai -> usztinugsq
+aaaaaaaaad -> acjnyrzcem
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaaa -> zomvtmqeym
+
+# Stop the gold memory server:
+$ kill %1
+[1]+  Terminated: 15          ./artifacts/gold_memory_server full > /dev/null 2>&1
+
+# Start Mongo.
+$ docker run -t --rm  --net=bridge --expose=27017 -p 27017:27017 mongo:4.0.7-xenial 1>/dev/null 2>&1 &
+
+# Run validation against mongo.
+$ cat commands.gold_memory.binary.dat | ./artifacts/mongo_client mongodb://127.0.0.1:27017 on > validation1.txt
+
+# Check that validation works:
+$ ./artifacts/check_validation_results validation0.txt validation1.txt
+2019/03/27 20:48:05 validation completed successfully. 750 lines.
+
+# Stop Mongo.
+$ kill %1
+
+# Start gold memory server for benchmarking.
+$ ./artifacts/gold_memory_server full 1>/dev/null 2>&1 &
+[1] 2991
+
+# Execute the benchmarking run against the gold memory server.
+$ cat commands.gold_memory.binary.dat | ./artifacts/gold_memory_client http://127.0.0.1:8080 off
+benchmark complete:
+  775 requests executed
+  750 read ops
+  250 write ops
+  1456.874691 writes/sec
+  4370.624073 reads/sec
+  228800.277333 ns/read
+  686400.832000 ns/write
+
+# Stop the gold memory server.
+$ kill %1
+[1]+  Terminated: 15          ./artifacts/gold_memory_server full > /dev/null 2>&1
+
+# Start Mongo for benchmarking.
+$ docker run -t --rm  --net=bridge --expose=27017 -p 27017:27017 mongo:4.0.7-xenial 1>/dev/null 2>&1 &
+[1] 3049
+
+
+# Execute the benchmarking run against the Mongo server.
+$ cat commands.gold_memory.binary.dat | ./artifacts/mongo_client mongodb://127.0.0.1:27017 off
+benchmark complete:
+  775 requests executed
+  750 read ops
+  250 write ops
+  202.271186 writes/sec
+  606.813559 reads/sec
+  1647952.629333 ns/read
+  4943857.888000 ns/write

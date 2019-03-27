@@ -1,0 +1,26 @@
+// FlatBuffers type definitions for the Key/Value workload.
+namespace serialized_messages;
+
+// KeyValueCommandOp is an enum indicating whether the op is for writing a
+// key/value pair, or for retrieving the value for a given key.
+enum KeyValueCommandOp:byte { Write, Read }
+
+// KeyValueCommand is a table that stores:
+//   The sequence ID of the command, which is used during validation.
+//   The op type of the command.
+//   The key data.
+//   The value data.
+table KeyValueCommand {
+    seq_id: long (id: 0);
+    op: KeyValueCommandOp (id: 1);
+    key: [ubyte] (id: 2);
+    value: [ubyte] (id: 3);
+}
+
+// BatchKeyValueCommand is a table that stores:
+//   The ordered list of commands to execute.
+//
+// This type is used when generating batched writes and reads.
+table BatchKeyValueCommand {
+    commands: [KeyValueCommand] (id: 0);
+}

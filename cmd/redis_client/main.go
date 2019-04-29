@@ -13,7 +13,7 @@ import (
 func main() {
 	app := cli.NewApp()
 	app.Flags = []cli.Flag{
-		cli.StringFlag{Name: "address", Value: "127.0.0.1:8000", Usage: "Address of gold-memory server."},
+		cli.StringFlag{Name: "address", Value: "127.0.0.1:6379", Usage: "Address for redis server."},
 		cli.Uint64Flag{Name: "validation", Value: 0, Usage: "Number of read responses to print for validation purposes."},
 		cli.StringFlag{Name: "validation-filename", Value: "/dev/stderr", Usage: "Destination file to write validation results, if applicable."},
 		cli.Uint64Flag{Name: "burn-in", Value: 0, Usage: "Number of read/write requests to use for burn-in before collecting statistics."},
@@ -34,7 +34,7 @@ func main() {
 		nWorkers := c.Int("workers")
 		fmt.Printf("Workers: %d\n", nWorkers)
 
-		driver := kv_query_util.NewGoldMemoryDriver(address)
+		driver := kv_query_util.NewRedisDriver(address)
 		kv_query_util.Run(driver, nValidation, validationFilename, nBurnIn, nWorkers)
 		return nil
 	}

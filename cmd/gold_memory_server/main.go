@@ -73,7 +73,7 @@ func serve(storeMode string) {
 			c.JSON(400, gin.H{
 				"message": "missing body",
 			})
- 			return
+			return
 		}
 		lines := bytes.Split(body, []byte("\n"))
 		for _, line := range lines {

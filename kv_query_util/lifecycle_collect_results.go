@@ -4,104 +4,151 @@ import (
 	"bufio"
 	"fmt"
 	"log"
+	"math"
 	"os"
-	"sync"
 	"time"
+
+	"github.com/google/flatbuffers/go"
+
+	"github.com/transactional-cloud-serving-benchmark/tcsb/serialized_messages"
 )
 
-func CollectResponsesAndPrintResults(nBurnIn, nValidation uint64, validationFilename string, rrPool *sync.Pool, crrs chan RequestResponse) {
-	start := time.Now()
+type ReplyCollector struct {
+	start time.Time
 
-	var doingBurnIn bool = nBurnIn > 0
-	var doingValidation bool = nValidation > 0
+	printInterval time.Duration
+	nextPrintAt   time.Time
 
-	var validationFile *os.File
-	var validationWriter *bufio.Writer
+	nBurnIn, nValidation uint64
 
-	if doingValidation {
+	doingBurnIn     bool
+	doingValidation bool
+
+	validationFile   *os.File
+	validationWriter *bufio.Writer
+
+	validations, burnins        uint64
+	readOps, writeOps           uint64
+	readRequests, writeRequests uint64
+}
+
+func NewReplyCollector(nBurnIn, nValidation uint64, validationFilename string) *ReplyCollector {
+	printInterval := time.Second * 30
+	rc := &ReplyCollector{
+		nBurnIn:     nBurnIn,
+		nValidation: nValidation,
+
+		printInterval: printInterval,
+		nextPrintAt:   time.Now().Add(printInterval),
+
+		start: time.Now(),
+
+		doingBurnIn:     nBurnIn > 0,
+		doingValidation: nValidation > 0,
+	}
+
+	if rc.doingValidation {
 		var err error
-		validationFile, err = os.Create(validationFilename)
+		rc.validationFile, err = os.Create(validationFilename)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		validationWriter = bufio.NewWriter(validationFile)
+		rc.validationWriter = bufio.NewWriter(rc.validationFile)
 	}
 
-	var validations, burnins uint64
-	var readOps, writeOps uint64
-	var readRequests, writeRequests uint64
+	return rc
+}
 
-	for crr := range crrs {
-		if !crr.completed {
-			log.Fatal("logic error: RequestResponse should have been marked completed")
+func (rc *ReplyCollector) Update(reply serialized_messages.Reply) {
+	if reply.ReplyUnionType() == serialized_messages.ReplyUnionReadReply {
+		// Decode the ReadReply.
+		t := flatbuffers.Table{}
+		if ok := reply.ReplyUnion(&t); !ok {
+			log.Fatal("logic error: bad ReplyUnion decoding")
 		}
 
-		if crr.readOps > 0 && crr.writeOps > 0 {
-			log.Fatal("logic error: got a request with mixed read and write ops")
-		}
+		rr := serialized_messages.ReadReply{}
+		rr.Init(t.Bytes, t.Pos)
 
-		if crr.readOps == 0 && crr.writeOps == 0 {
-			log.Fatal("logic error: got a request with zero read and write ops")
-		}
-
-		// If burn-in is requested, check if it needs to be stopped. If
+		// If burn-in is occurring, check if it needs to be stopped. If
 		// so, reset the timer and stop burn-in.
-		if doingBurnIn {
-			burnins += crr.readOps + crr.writeOps
-			if burnins >= nBurnIn {
-				doingBurnIn = false
+		if rc.doingBurnIn {
+			rc.burnins += 1
+			if rc.burnins >= rc.nBurnIn {
+				rc.doingBurnIn = false
 				// Reset statistics timer when burn-in is complete:
-				start = time.Now()
+				rc.start = time.Now()
 			}
 		} else {
-			if crr.writeOps > 0 {
-				writeOps += crr.writeOps
-				writeRequests++
-			} else {
-				readOps += crr.readOps
-				readRequests++
-
-				if len(crr.readkey) == 0 {
-					log.Fatalf("logic error: empty readkey on completed read result: %+v", crr)
-				}
-			}
+			rc.readOps++
+			rc.readRequests++
 		}
 
-		// If validation is configured, check if validation needs to be
-		// stopped based on this response. If not, print the read
-		// result. If validation needs to be stopped, stop doing
-		// validation.
-		if doingValidation {
-			if crr.readOps > 0 {
-				validations += crr.readOps
-				fmt.Fprintf(validationWriter, "%s -> %s\n", crr.readkey, crr.readval)
-				if validations >= nValidation {
-					doingValidation = false
-					validationWriter.Flush()
-					validationFile.Close()
-				}
+		// If validation is occurring, print the result, then check if
+		// validation needs to be stopped.
+		if rc.doingValidation {
+			rc.validations++
+			fmt.Fprintf(rc.validationWriter, "%s -> %s\n", rr.KeyBytes(), rr.ValueBytes())
+			if rc.validations >= rc.nValidation {
+				rc.doingValidation = false
+				rc.validationWriter.Flush()
+				rc.validationFile.Close()
 			}
 		}
+	} else if reply.ReplyUnionType() == serialized_messages.ReplyUnionBatchWriteReply {
+		// Decode the BatchWriteReply.
+		t := flatbuffers.Table{}
+		if ok := reply.ReplyUnion(&t); !ok {
+			log.Fatal("logic error: bad ReplyUnion decoding")
+		}
 
-		// Reset the RequestResponse and give it back to the Pool.
-		crr.Reset()
-		rrPool.Put(crr)
+		rr := serialized_messages.BatchWriteReply{}
+		rr.Init(t.Bytes, t.Pos)
+
+		// If burn-in is occurring, check if it needs to be stopped. If
+		// so, reset the timer and stop burn-in.
+		if rc.doingBurnIn {
+			rc.burnins += 1
+			if rc.burnins >= rc.nBurnIn {
+				rc.doingBurnIn = false
+				// Reset statistics timer when burn-in is complete:
+				rc.start = time.Now()
+			}
+		} else {
+			rc.writeOps += rr.NWrites()
+			rc.writeRequests++
+		}
+	} else {
+		log.Fatal("unknown ReplyUnionType")
 	}
 
+	if time.Now().After(rc.nextPrintAt) {
+		log.Printf("benchmark running for %d seconds:\n", int(math.Round(time.Since(rc.start).Seconds())))
+		rc.printStats()
+		fmt.Println("")
+		rc.nextPrintAt = rc.nextPrintAt.Add(rc.printInterval)
+	}
+}
+func (rc *ReplyCollector) Finish() {
+	log.Printf("benchmark complete:\n")
+	rc.printStats()
+}
+
+func (rc *ReplyCollector) printStats() {
 	end := time.Now()
-	tookNanos := float64(end.Sub(start).Nanoseconds())
+	tookNanos := float64(end.Sub(rc.start).Nanoseconds())
 	secs := tookNanos / 1e9
 
-	fmt.Printf("benchmark complete:\n")
-	fmt.Printf("  %d read commands logged for validation\n", validations)
-	fmt.Printf("  %d commands executed before beginning statistics collection (burn-in)\n", burnins)
-	fmt.Printf("  %d client requests executed\n", readRequests+writeRequests)
-	fmt.Printf("  %d read commands\n", readOps)
-	fmt.Printf("  %d write commands (possibly batched together)\n", writeOps)
-	fmt.Printf("  %d total commands\n", readOps+writeOps)
-	fmt.Printf("  %.1f write commands/sec\n", float64(writeOps)/secs)
-	fmt.Printf("  %.1f read commands/sec\n", float64(readOps)/secs)
-	fmt.Printf("  %d ns/read command\n", int64(tookNanos/float64(readOps)))
-	fmt.Printf("  %d ns/write command\n", int64(tookNanos/float64(writeOps)))
+	fmt.Printf("  %d read operations logged for validation\n", rc.validations)
+	fmt.Printf("  %d operations executed before beginning statistics collection (burn-in)\n", rc.burnins)
+	fmt.Printf("  %d read batch requests\n", rc.readRequests)
+	fmt.Printf("  %d write batch requests\n", rc.writeRequests)
+	fmt.Printf("  %d read operations\n", rc.readOps)
+	fmt.Printf("  %d write operations\n", rc.writeOps)
+	fmt.Printf("  %d total operations\n", rc.readOps+rc.writeOps)
+	fmt.Printf("  %.1f write ops/sec\n", float64(rc.writeOps)/secs)
+	fmt.Printf("  %.1f read ops/sec\n", float64(rc.readOps)/secs)
+	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/read op\n", int64(tookNanos/float64(rc.readOps)))
+	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/write op\n", int64(tookNanos/float64(rc.writeOps)))
 }

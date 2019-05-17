@@ -11,48 +11,7 @@ import (
 	"github.com/transactional-cloud-serving-benchmark/tcsb/simulation"
 )
 
-//var (
-//	scenario = flag.String("scenario", "", "Choose from: keyvalue")
-//	stage = flag.String("stage", "", "Choose from: prepare, exec")
-//	params = flag.String("params", "", "k=v,k=v formatted parameters for the particular scenario")
-//)
-
 func main() {
-	//flag.Parse()
-	//app := cli.NewApp()
-	//app.Name = "generate_commands"
-	//app.Usage = "Generate TCSB commands to execute later, for a given scenario and database type."
-	//app.Flags = []cli.Flag{
-	//	cli.StringFlag{
-	//		Name:  "lang",
-	//		Value: "english",
-	//		Usage: "language for the greeting",
-	//	},
-	//}
-	//app.Commands = []cli.Command{
-	//	{
-	//		Name:    "schema",
-	//		Aliases: []string{},
-	//		Usage:   "Generate schema creation commands.",
-	//		Subcommands: []cli.Command{
-	//			{
-	//				Name:  "keyvalue",
-	//				Usage: "The key-value scenario.",
-	//				Subcommands: []cli.Command{
-	//					{
-	//						Name:    "example_server",
-	//						Aliases: []string{},
-	//						Usage:   "Use k",
-	//						Action: func(c *cli.Context) error {
-	//							//fmt.Println("new task template: ", c.Args().First())
-	//							return nil
-	//						},
-	//					},
-	//				},
-	//			},
-	//		},
-	//	},
-	//}
 	app := cli.NewApp()
 
 	app.Action = func(c *cli.Context) error {
@@ -95,7 +54,6 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
 
 		out := bufio.NewWriter(os.Stdout)
 		defer out.Flush()

@@ -3,6 +3,7 @@ package simulation
 import (
 	"fmt"
 	"io"
+	"log"
 	"math/rand"
 	"strconv"
 	"strings"
@@ -203,9 +204,9 @@ func emitDebugKeyValue(commandsGenerated, batchIdx int64, w io.Writer, opRead bo
 	startingId := int(commandsGenerated) - len(keys)
 	for j, _ := range keys {
 		if opRead {
-			fmt.Fprintf(w, "%d %d %d r %s\n", startingId + j, batchIdx, j, keys[j])
+			fmt.Fprintf(w, "%d %d %d r %s\n", startingId+j, batchIdx, j, keys[j])
 		} else {
-			fmt.Fprintf(w, "%d %d %d w %s %s\n", startingId + j, batchIdx, j, keys[j], vals[j])
+			fmt.Fprintf(w, "%d %d %d w %s %s\n", startingId+j, batchIdx, j, keys[j], vals[j])
 		}
 	}
 }
@@ -213,36 +214,53 @@ func emitDebugKeyValue(commandsGenerated, batchIdx int64, w io.Writer, opRead bo
 func emitFlatBuffersKeyValue(builder *flatbuffers.Builder, i int64, w io.Writer, opRead bool, keys, vals [][]byte) {
 	builder.Reset()
 
-	cmdOffsets := make([]flatbuffers.UOffsetT, 0, len(keys))
-	for idx, _ := range keys {
-		keyOffset := builder.CreateByteVector(keys[idx])
-		valOffset := builder.CreateByteVector(vals[idx])
+	if opRead {
+		if len(keys) != 1 {
+			log.Fatal("bad assumption in scenario generation")
+		}
+		keyOffset := builder.CreateByteVector(keys[0])
 
-		serialized_messages.KeyValueCommandStart(builder)
-		if opRead {
-			serialized_messages.KeyValueCommandAddOp(builder, serialized_messages.KeyValueCommandOpRead)
-		} else {
-			serialized_messages.KeyValueCommandAddOp(builder, serialized_messages.KeyValueCommandOpWrite)
+		serialized_messages.ReadRequestStart(builder)
+		serialized_messages.ReadRequestAddKey(builder, keyOffset)
+		rrOffset := serialized_messages.ReadRequestEnd(builder)
+
+		serialized_messages.RequestStart(builder)
+		serialized_messages.RequestAddRequestUnionType(builder, byte(serialized_messages.RequestUnionReadRequest))
+		serialized_messages.RequestAddRequestUnion(builder, rrOffset)
+		reqOffset := serialized_messages.RequestEnd(builder)
+
+		builder.Finish(reqOffset)
+
+	} else {
+		kvpOffsets := make([]flatbuffers.UOffsetT, len(keys))
+
+		for idx, _ := range keys {
+			keyOffset := builder.CreateByteVector(keys[idx])
+			valOffset := builder.CreateByteVector(vals[idx])
+
+			serialized_messages.KeyValuePairStart(builder)
+			serialized_messages.KeyValuePairAddKey(builder, keyOffset)
+			serialized_messages.KeyValuePairAddValue(builder, valOffset)
+			kvpOffsets[idx] = serialized_messages.KeyValuePairEnd(builder)
 		}
 
-		serialized_messages.KeyValueCommandAddKey(builder, keyOffset)
-		serialized_messages.KeyValueCommandAddValue(builder, valOffset)
-		serialized_messages.KeyValueCommandAddSeqId(builder, i)
+		serialized_messages.BatchWriteRequestStartKeyValuePairsVector(builder, len(kvpOffsets))
+		for j := len(kvpOffsets) - 1; j >= 0; j-- {
+			builder.PrependUOffsetT(kvpOffsets[j])
+		}
+		kvpVectorOffset := builder.EndVector(len(kvpOffsets))
 
-		end := serialized_messages.KeyValueCommandEnd(builder)
-		cmdOffsets = append(cmdOffsets, end)
+		serialized_messages.BatchWriteRequestStart(builder)
+		serialized_messages.BatchWriteRequestAddKeyValuePairs(builder, kvpVectorOffset)
+		bwrOffset := serialized_messages.BatchWriteRequestEnd(builder)
+
+		serialized_messages.RequestStart(builder)
+		serialized_messages.RequestAddRequestUnionType(builder, byte(serialized_messages.RequestUnionBatchWriteRequest))
+		serialized_messages.RequestAddRequestUnion(builder, bwrOffset)
+		reqOffset := serialized_messages.RequestEnd(builder)
+
+		builder.Finish(reqOffset)
 	}
-
-	serialized_messages.BatchKeyValueCommandStartCommandsVector(builder, len(cmdOffsets))
-	for _, cmdOffset := range cmdOffsets {
-		builder.PrependUOffsetT(cmdOffset)
-	}
-	vecOffset := builder.EndVector(len(cmdOffsets))
-
-	serialized_messages.BatchKeyValueCommandStart(builder)
-	serialized_messages.BatchKeyValueCommandAddCommands(builder, vecOffset)
-	end := serialized_messages.BatchKeyValueCommandEnd(builder)
-	builder.Finish(end)
 
 	// Framing format: length in bytes as a uint32.
 	builder.PrependUint32(uint32(len(builder.FinishedBytes())))
@@ -258,10 +276,10 @@ type KeyValueOpGen interface {
 // RandomOpGen wraps logic to track state, and generate read and write
 // requests, for random key/value ops.
 type RandomOpGen struct {
-	OpRng *rand.Rand
+	OpRng       *rand.Rand
 	DataGenSeed int64
-	NWritten int64
-	NTotal int64
+	NWritten    int64
+	NTotal      int64
 }
 
 func NewRandomOpGen(opSeed int64) *RandomOpGen {
@@ -269,10 +287,10 @@ func NewRandomOpGen(opSeed int64) *RandomOpGen {
 	dataGenSeed := opRng.Int63()
 
 	return &RandomOpGen{
-		OpRng: opRng,
+		OpRng:       opRng,
 		DataGenSeed: dataGenSeed,
-		NWritten: 0,
-		NTotal: 0,
+		NWritten:    0,
+		NTotal:      0,
 	}
 }
 
@@ -310,10 +328,10 @@ func (rog *RandomOpGen) NextWriteOp(dstkey, dstval []byte) {
 // OrderedOpGen wraps logic to track state, and generate read and write
 // requests, for ordered write ops and random read  ops.
 type OrderedOpGen struct {
-	OpRng *rand.Rand
+	OpRng       *rand.Rand
 	DataGenSeed int64
-	NWritten int64
-	NTotal int64
+	NWritten    int64
+	NTotal      int64
 }
 
 func NewOrderedOpGen(opSeed int64) *OrderedOpGen {
@@ -321,10 +339,10 @@ func NewOrderedOpGen(opSeed int64) *OrderedOpGen {
 	dataGenSeed := opRng.Int63()
 
 	return &OrderedOpGen{
-		OpRng: opRng,
+		OpRng:       opRng,
 		DataGenSeed: dataGenSeed,
-		NWritten: 0,
-		NTotal: 0,
+		NWritten:    0,
+		NTotal:      0,
 	}
 }
 
@@ -367,7 +385,7 @@ func seqAscii(id uint64, b []byte) {
 	const choices = "abcdefghijklmnopqrstuvwxyz"
 	for i := range b {
 		m := id % uint64(len(choices))
-		b[len(b) - i - 1] = choices[int(m)]
+		b[len(b)-i-1] = choices[int(m)]
 		id = (id - m) / uint64(len(choices))
 	}
 }

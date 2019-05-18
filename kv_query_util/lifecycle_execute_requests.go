@@ -1,48 +1,74 @@
 package kv_query_util
 
 import (
+	"bufio"
+	"io"
+	"log"
+	"os"
 	"sync"
+
+	"github.com/transactional-cloud-serving-benchmark/tcsb/serialization_util"
 )
 
-func Run(driver Driver, nValidation uint64, validationFilename string, nBurnIn uint64, nWorkers int) {
-	driver.Setup()
-	defer driver.Teardown()
+type IPCDriver struct {
+	stdin  io.WriteCloser
+	stdout io.ReadCloser
+	stderr io.ReadCloser
+}
 
-	rrPool := &sync.Pool{
-		New: func() interface{} {
-			return NewRequestResponse()
-		},
+func NewIPCDriver(stdin io.WriteCloser, stdout, stderr io.ReadCloser) IPCDriver {
+	return IPCDriver{
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
 	}
+}
 
-	rrs := make(chan RequestResponse, 1000)
+func RunIPCDriver(ipcDriver IPCDriver, nValidation uint64, validationFilename string, nBurnIn uint64) {
+	ipcDriver.Setup()
+	defer ipcDriver.Teardown()
+
+	stdin := bufio.NewReader(os.Stdin)
+	stderr := bufio.NewWriter(os.Stderr)
+
+	wg := &sync.WaitGroup{}
+
+	wg.Add(1)
 	go func() {
-		DispatchRequestsToWorkers(rrPool, rrs)
-		close(rrs)
+		_, err := io.Copy(ipcDriver.stdin, stdin)
+		ipcDriver.stdin.Close()
+		if err == io.ErrClosedPipe {
+			// not a problem
+		} else if err != nil {
+			log.Fatal("0 ", err)
+		}
+		wg.Done()
 	}()
 
-	completedRrs := make(chan RequestResponse, 1000)
-	wg0 := &sync.WaitGroup{}
-	for i := 0; i < nWorkers; i++ {
-		wg0.Add(1)
-		go func() {
-			for rr := range rrs {
-				driver.ExecuteOnce(&rr)
-				completedRrs <- rr
-
-			}
-			wg0.Done()
-		}()
-	}
-
-	wg1 := &sync.WaitGroup{}
-	wg1.Add(1)
+	wg.Add(1)
 	go func() {
-		CollectResponsesAndPrintResults(nBurnIn, nValidation, validationFilename, rrPool, completedRrs)
-		wg1.Done()
+		_, err := io.Copy(stderr, ipcDriver.stderr)
+		if err == io.ErrClosedPipe {
+			// not a problem
+		} else if err != nil {
+			log.Fatal("2 ", err)
+		}
+		wg.Done()
 	}()
 
-	wg0.Wait()
-	close(completedRrs)
+	collector := NewReplyCollector(nBurnIn, nValidation, validationFilename)
+	buf := make([]byte, 0, 4096)
+	for {
 
-	wg1.Wait()
+		reply, err := serialization_util.DecodeNextReply(ipcDriver.stdout, &buf)
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			log.Fatal("bad decoding: ", err)
+		}
+
+		collector.Update(reply)
+	}
+	wg.Wait()
+	collector.Finish()
 }

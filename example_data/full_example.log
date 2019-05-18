@@ -36,83 +36,74 @@ $ ./artifacts/generate_commands keyvalue gold_memory exec binary seed=4321,write
 $ du -h commands.kv.binary.dat
 96K     commands.kv.binary.dat
 
-# Spawn a gold memory server:
-$ ./artifacts/gold_memory_server full 1>/dev/null 2>&1 &
-[1] 2844
-
-# Execute a gold memory benchmark, using the burn-in, validation, and worker-level parallelism commands.
+# Execute a gold memory benchmark, using the burn-in and validation commands.
 # Burn-in is the number of operations that are initially skipped for statistics collection, to allow the system to warm up.
 # Validation is the recording of key/value read requests, to compare correctness amongst different driver implementations.
-# The workers parameter configures the number of parallel workers.
-$ cat example_data/commands.kv.binary.dat | ./artifacts/gold_memory_client --address=http://127.0.0.1:8080 --burn-in=100 --validation=200 --validation-filename=validation-gold.txt --workers=4
-Address: http://127.0.0.1:8080
+# The `cmd` argument specifies the subprocess that the IPC driver will launch.
+# Note that the gold_ram_kv program stores data in-process, and does not connect to a server.
+$ cat commands.kv.binary.dat | ../artifacts/ipc_driver --burn-in=100 --validation=200 --validation-filename=validation-gold.txt --cmd="../artifacts/ipc_client_ephemeral_kv"
 Validation: 200
 Validation filename: validation-gold.txt
 Burn-in: 100
-Workers: 4
-benchmark complete:
-  200 read commands logged for validation
-  100 commands executed before beginning statistics collection (burn-in)
-  702 client requests executed
-  680 read commands
-  220 write commands (possibly batched together)
-  900 total commands
-  3792.1 write commands/sec
-  11721.0 read commands/sec
-  85316 ns/read command
-  263706 ns/write command
+cmd: ../artifacts/ipc_client_ephemeral_kv
+2019/05/18 06:52:24 benchmark complete:
+  200 read operations logged for validation
+  100 operations executed before beginning statistics collection (burn-in)
+  654 read batch requests
+  21 write batch requests
+  654 read operations
+  210 write operations
+  864 total operations
+  23373.5 write ops/sec
+  72791.9 read ops/sec
+
 
 # Inspect the gold memory server validation output.
-# Observe that some values are missing, because we are using parallel workers, which causes writes and reads to sometimes occur out-of-order, thereby causing some 404s.
+# Note that some values may be missing, because when we use parallel workers, writes and reads can sometimes occur out-of-order ( thereby causing some 404s).
 # This is expected and fine.
 $ head validation-gold.txt
-aaaaaaaaaf -> {"message":"key not found"}
-aaaaaaaaac -> {"message":"key not found"}
-aaaaaaaaaa -> {"message":"key not found"}
+aaaaaaaaac -> oqfowotylo
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaaf -> vvdmnutjtc
+aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaaa -> zomvtmqeym
 aaaaaaaaai -> usztinugsq
-aaaaaaaaaa -> zomvtmqeym
-aaaaaaaaaa -> zomvtmqeym
+aaaaaaaaai -> usztinugsq
 aaaaaaaaad -> acjnyrzcem
 aaaaaaaaaa -> zomvtmqeym
 aaaaaaaaaa -> zomvtmqeym
-aaaaaaaaai -> usztinugsq
 
-# Stop the gold memory server:
-$ kill %1
-[1]+  Terminated: 15          ./artifacts/gold_memory_server full > /dev/null 2>&1
 
 # Start Mongo.
 $ docker run -it --rm --net=bridge --expose=27017 -p 27017:27017 mongo:4.0.7-xenial 1>/dev/null 2>&1 &
 
 # Execute a Mongo benchmark, using the burn-in, validation, and worker-level parallelism commands.
-$ cat example_data/commands.kv.binary.dat | ./artifacts/mongo_client --address=mongodb://127.0.0.1:27017 --burn-in=100 --validation=200 --validation-filename=validation-mongo.txt --workers=4
-Address: mongodb://127.0.0.1:27017
+$ cat commands.kv.binary.dat | ../artifacts/ipc_driver --burn-in=100 --validation=200 --validation-filename=validation-mongo.txt --cmd="../artifacts/ipc_client_mongo --address=mongodb://127.0.0.1:27017 --workers=4"
 Validation: 200
 Validation filename: validation-mongo.txt
 Burn-in: 100
-Workers: 4
-benchmark complete:
-  200 read commands logged for validation
-  100 commands executed before beginning statistics collection (burn-in)
-  702 client requests executed
-  680 read commands
-  220 write commands (possibly batched together)
-  900 total commands
-  322.6 write commands/sec
-  997.0 read commands/sec
-  1002972 ns/read command
-  3100097 ns/write command
+cmd: ../artifacts/ipc_client_mongo --address=mongodb://127.0.0.1:27017 --workers=4
+2019/05/18 07:32:44 benchmark complete:
+  200 read operations logged for validation
+  100 operations executed before beginning statistics collection (burn-in)
+  654 read batch requests
+  21 write batch requests
+  654 read operations
+  210 write operations
+  864 total operations
+  363.2 write ops/sec
+  1131.1 read ops/sec
 
-# Check the validation results from the gold memory benchmark, and the mongo benchmark, are comparable.
-# See that that 10 of 200 lines differ.
-# We conclude that the benchmark was correct, because only 5% of results differ.
+# Check the validation results from the gold memory benchmark, and the Mongo benchmark, are comparable.
+# Observe that 4 of 200 lines differ.
+# We conclude that the benchmark was correct, because only 2% of results differ.
 # (The differences are nonzero due to use using parallel requests.)
 $ wc -l validation-gold.txt validation-mongo.txt
   200 validation-gold.txt
   200 validation-mongo.txt
   400 total
 $ diff -y --suppress-common-lines <(sort validation-gold.txt) <(sort validation-mongo.txt) | wc -l
-10
+4
 
 # Stop Mongo.
 $ kill %1
@@ -121,64 +112,55 @@ $ kill %1
 $ docker run -it --rm  --net=bridge --expose=6379 -p 6379:6379 redis:5.0-alpine 1>/dev/null 2>&1 &
 
 # Execute a Redis benchmark, using the burn-in, validation, and worker-level parallelism commands.
-$ cat example_data/commands.kv.binary.dat | ./artifacts/redis_client --address=:6379 --burn-in=100 --validation=200 --validation-filename=validation-redis.txt --workers=4
-Address: :6379
+$ cat commands.kv.binary.dat | ../artifacts/ipc_driver --burn-in=100 --validation=200 --validation-filename=validation-redis.txt --cmd="../artifacts/ipc_client_redis --address=:6379 --workers=4"
 Validation: 200
 Validation filename: validation-redis.txt
 Burn-in: 100
-Workers: 4
-benchmark complete:
-  200 read commands logged for validation
-  100 commands executed before beginning statistics collection (burn-in)
-  702 client requests executed
-  680 read commands
-  220 write commands (possibly batched together)
-  900 total commands
-  672.8 write commands/sec
-  2079.4 read commands/sec
-  480903 ns/read command
-  1486429 ns/write command
+cmd: ../artifacts/ipc_client_redis --address=:6379 --workers=4
+2019/05/18 07:43:59 benchmark complete:
+  200 read operations logged for validation
+  100 operations executed before beginning statistics collection (burn-in)
+  654 read batch requests
+  21 write batch requests
+  654 read operations
+  210 write operations
+  864 total operations
+  986.5 write ops/sec
+  3072.4 read ops/sec
 
 # Stop Redis.
 $ kill %1
 
 # Check the validation results from the gold memory benchmark, and the Redis benchmark, are comparable.
-# See that that 15 of 200 lines differ.
-# We conclude that the benchmark was correct, because only 7.5% of results differ.
+# Observe that 6 of 200 lines differ.
+# We conclude that the benchmark was correct, because only 3% of results differ.
 # (The differences are nonzero due to use using parallel requests.)
 $ wc -l validation-gold.txt validation-redis.txt
   200 validation-gold.txt
   200 validation-redis.txt
   400 total
 $ diff -y --suppress-common-lines <(sort validation-gold.txt) <(sort validation-redis.txt) | wc -l
-15
+6
 
 # Start YugabyteDB.
 $ python yb-docker-ctl start
 
 # Execute a YugabyteDB benchmark with the Cassandra protocol, using the burn-in, validation, and worker-level parallelism commands.
-cat example_data/commands.kv.binary.dat | ./artifacts/cassandra_client --burn-in=100 --validation=200 --validation-filename=validation-ydb-cassandra.txt --workers=4
-Parsed addresses: [127.0.0.1]
+$ cat commands.kv.binary.dat | ../artifacts/ipc_driver --burn-in=100 --validation=200 --validation-filename=validation-ydb-cassandra.txt --cmd="../artifacts/ipc_client_cassandra --addresses=127.0.0.1 --workers=4"
 Validation: 200
 Validation filename: validation-ydb-cassandra.txt
 Burn-in: 100
-Workers: 4
-Connecting to cluster
-Creating keyspace tcsb, if needed
-Creating table tcsb.keyvalue, if needed
-Truncating table tcsb.keyvalue
-Asserting that the table tcsb.keyvalue is empty... Success!
-benchmark complete:
-  200 read commands logged for validation
-  100 commands executed before beginning statistics collection (burn-in)
-  702 client requests executed
-  680 read commands
-  220 write commands (possibly batched together)
-  900 total commands
-  352.5 write commands/sec
-  1089.5 read commands/sec
-  917836 ns/read command
-  2836948 ns/write command
+cmd: ../artifacts/ipc_client_cassandra --addresses=127.0.0.1 --workers=4
+2019/05/18 07:12:40 benchmark complete:
+  200 read operations logged for validation
+  100 operations executed before beginning statistics collection (burn-in)
+  654 read batch requests
+  21 write batch requests
+  654 read operations
+  210 write operations
+  864 total operations
+  449.0 write ops/sec
+  1398.2 read ops/sec
 
 # Stop YugabyteDB.
 $ python yb-docker-ctl stop
@@ -192,4 +174,4 @@ $ wc -l validation-gold.txt validation-ydb-cassandra.txt
   200 validation-ydb-cassandra.txt
   400 total
 $ diff -y --suppress-common-lines <(sort validation-gold.txt) <(sort validation-ydb-cassandra.txt) | wc -l
-10
+7

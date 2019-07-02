@@ -139,7 +139,7 @@ func (s *KeyValueScenario) NewEmitter(w io.Writer) Emitter {
 	var builder *flatbuffers.Builder
 
 	keysBacking := make([]byte, s.KeyLen*s.WriteBatchSize)
-	valsBacking := make([]byte, s.KeyLen*s.WriteBatchSize)
+	valsBacking := make([]byte, s.ValLen*s.WriteBatchSize)
 	keys := make([][]byte, 0, s.KeyLen)
 	vals := make([][]byte, 0, s.ValLen)
 

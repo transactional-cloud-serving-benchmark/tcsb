@@ -11,6 +11,7 @@ require (
 	github.com/golang/protobuf v1.3.1 // indirect
 	github.com/golang/snappy v0.0.1 // indirect
 	github.com/google/flatbuffers v1.10.0
+	github.com/lib/pq v1.1.1
 	github.com/mattn/go-isatty v0.0.7 // indirect
 	github.com/ugorji/go/codec v0.0.0-20190320090025-2dc34c0b8780 // indirect
 	github.com/urfave/cli v1.20.0

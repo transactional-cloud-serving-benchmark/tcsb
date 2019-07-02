@@ -25,9 +25,6 @@ func NewIPCDriver(stdin io.WriteCloser, stdout, stderr io.ReadCloser) IPCDriver 
 }
 
 func RunIPCDriver(ipcDriver IPCDriver, nValidation uint64, validationFilename string, nBurnIn uint64) {
-	ipcDriver.Setup()
-	defer ipcDriver.Teardown()
-
 	stdin := bufio.NewReader(os.Stdin)
 	stderr := bufio.NewWriter(os.Stderr)
 

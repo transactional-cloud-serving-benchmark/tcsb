@@ -130,16 +130,28 @@ func NewCassandraClient(addresses []string) *CassandraClient {
 }
 
 func (cc *CassandraClient) Setup() {
+	{
+		cluster := gocql.NewCluster(cc.addresses...)
+		cluster.Consistency = gocql.Quorum
+		log.Println("Connecting to cluster to potentially create keyspace")
+		session, err := cluster.CreateSession()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		log.Println("Creating keyspace tcsb, if needed")
+		x := `CREATE KEYSPACE IF NOT EXISTS tcsb WITH REPLICATION = { 'class' : 'SimpleStrategy', 'replication_factor' : 3 };`
+		if err := session.Query(x).Exec(); err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	cluster := gocql.NewCluster(cc.addresses...)
 	cluster.Keyspace = "tcsb"
+	cluster.Consistency = gocql.Quorum
 	log.Println("Connecting to cluster")
 	session, err := cluster.CreateSession()
 	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("Creating keyspace tcsb, if needed")
-	if err := session.Query("CREATE KEYSPACE IF NOT EXISTS tcsb").Exec(); err != nil {
 		log.Fatal(err)
 	}
 

@@ -140,6 +140,7 @@ func (rc *ReplyCollector) printStats() {
 	tookNanos := float64(end.Sub(rc.start).Nanoseconds())
 	secs := tookNanos / 1e9
 
+	fmt.Printf("  %7.2f seconds elapsed\n", secs)
 	fmt.Printf("  %d read operations logged for validation\n", rc.validations)
 	fmt.Printf("  %d operations executed before beginning statistics collection (burn-in)\n", rc.burnins)
 	fmt.Printf("  %d read batch requests\n", rc.readRequests)
@@ -147,8 +148,8 @@ func (rc *ReplyCollector) printStats() {
 	fmt.Printf("  %d read operations\n", rc.readOps)
 	fmt.Printf("  %d write operations\n", rc.writeOps)
 	fmt.Printf("  %d total operations\n", rc.readOps+rc.writeOps)
-	fmt.Printf("  %.1f write ops/sec\n", float64(rc.writeOps)/secs)
-	fmt.Printf("  %.1f read ops/sec\n", float64(rc.readOps)/secs)
+	fmt.Printf("  %.1f average write ops/sec\n", float64(rc.writeOps)/secs)
+	fmt.Printf("  %.1f average read ops/sec\n", float64(rc.readOps)/secs)
 	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/read op\n", int64(tookNanos/float64(rc.readOps)))
 	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/write op\n", int64(tookNanos/float64(rc.writeOps)))
 }

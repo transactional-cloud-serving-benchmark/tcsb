@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -55,7 +56,7 @@ func main() {
 
 	err := app.Run(os.Args)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("toplevel error", err)
 	}
 }
 
@@ -169,16 +170,29 @@ func (psc *PostgreSQLClient) Setup() {
 			log.Fatal("failed to open database: ", err)
 		}
 
-		// Drop logical database.
-		_, err = db.Exec("DROP DATABASE IF EXISTS tcsb")
+		// Use a single connection, not the connection pool, to mitigate distributed logic issues when manipulating schemas.
+		conn, err := db.Conn(context.Background())
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("error when establishing conn for schema manipulation: ", err)
 		}
 
+		//// Drop logical database.
+		//_, err = conn.ExecContext(context.Background(), "DROP DATABASE IF EXISTS tcsb")
+		//if err != nil {
+		//	log.Fatal("error when dropping database", err)
+		//}
+
 		// Create logical database.
-		_, err = db.Exec("CREATE DATABASE tcsb")
+		_, err = conn.ExecContext(context.Background(), "CREATE DATABASE tcsb")
 		if err != nil {
-			log.Fatal(err)
+			log.Println("recoverable error when (re-)creating database", err)
+		}
+
+		if err = conn.Close(); err != nil {
+			log.Fatal("error when closing schema manipulation connection", err)
+		}
+		if err = db.Close(); err != nil {
+			log.Fatal("error when closing database connection: ", err)
 		}
 	}
 	{
@@ -190,16 +204,30 @@ func (psc *PostgreSQLClient) Setup() {
 			log.Fatal("failed to open database: ", err)
 		}
 
+		// Use a single connection, not the connection pool, to mitigate distributed logic issues when manipulating schemas.
+		conn, err := db.Conn(context.Background())
+		if err != nil {
+			log.Fatal("error when establishing conn for schema manipulation: ", err)
+		}
+
 		// Create table.
 		if psc.schemaMode == "simple_kv" {
-			_, err = db.Exec("CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)")
+			_, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue; CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)")
 		} else {
 			panic("logic error: unknown schema mode")
 		}
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("error when creating table: ", err)
+		}
+		if err = conn.Close(); err != nil {
+			log.Fatal("error when closing schema manipulation connection", err)
+		}
+		if err = db.Close(); err != nil {
+			log.Fatal("error when closing database connection: ", err)
 		}
 	}
+
+	log.Println("schema setup complete")
 
 	psc.dbs = make([]*sql.DB, 0)
 	for _, host := range psc.hosts {
@@ -210,6 +238,8 @@ func (psc *PostgreSQLClient) Setup() {
 		}
 		psc.dbs = append(psc.dbs, db)
 	}
+
+	log.Println("connections established")
 }
 
 func (psc *PostgreSQLClient) Teardown() {
@@ -241,6 +271,9 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
 		db := psc.dbs[rand.Intn(len(psc.dbs))]
 		rows, err := db.Query("SELECT val FROM tcsb.keyvalue WHERE key = $1 LIMIT 1", rr.KeyBytes())
+		if err != nil {
+			log.Fatal("error during SELECT query: ", err)
+		}
 		err = rows.Scan(valbufp)
 		if err != nil {
 			log.Fatal("error during scanning of read query result", err)

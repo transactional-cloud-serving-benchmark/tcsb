@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
+	"log"
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"math/rand"
 	"os"
 	"strings"
@@ -21,7 +21,11 @@ import (
 
 var schemaModes map[string]struct{} = map[string]struct{}{"simple_kv": struct{}{}}
 
+var logger *log.Logger
+
 func main() {
+
+
 	app := cli.NewApp()
 	app.Flags = []cli.Flag{
 		cli.Uint64Flag{Name: "workers", Value: 1, Usage: "Number of parallel workers to use when submitting requests."},
@@ -75,7 +79,7 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 		os.Stdout.Close()
 	}()
 
-	pgClient := NewPostgreSQLClient(schemaMode, hosts, port, user)
+	pgClient := NewPostgreSQLClient(schemaMode, hosts, port, user, nWorkers)
 	pgClient.Setup()
 	defer pgClient.Teardown()
 
@@ -99,12 +103,12 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 
 	for i := 0; i < nWorkers; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerId int) {
 			builder := flatbuffers.NewBuilder(4096)
 			for cpi := range clientPoolInputs {
 				builder.Reset()
 
-				pgClient.HandleRequestResponse(builder, bufpPool, cpi.req)
+				pgClient.HandleRequestResponse(builder, bufpPool, cpi.req, workerId)
 				if len(builder.FinishedBytes()) == 0 {
 					log.Fatal("bad reply serialization")
 				}
@@ -131,7 +135,7 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 				outputBufps <- bufp
 			}
 			wg.Done()
-		}()
+		}(i)
 	}
 
 	go func() {
@@ -152,23 +156,28 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 
 type PostgreSQLClient struct {
 	schemaMode string
+	nWorkers int
 
 	hosts []string
 	port  int
 	user  string
 
 	dbs []*sql.DB
+
+	conns [][]*sql.Conn
 }
 
-func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user string) *PostgreSQLClient {
+func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
 	return &PostgreSQLClient{
 		schemaMode: schemaMode,
+		nWorkers: nWorkers,
 
 		hosts: hosts,
 		port:  port,
 		user:  user,
 
 		dbs: nil,
+		conns: nil,
 	}
 }
 
@@ -258,7 +267,23 @@ func (psc *PostgreSQLClient) Setup() {
 		psc.dbs = append(psc.dbs, db)
 	}
 
-	log.Println("connections established")
+	psc.conns = make([][]*sql.Conn, 0, psc.nWorkers)
+	nConns := 0
+	for i := 0; i < psc.nWorkers; i++ {
+		workerConns := make([]*sql.Conn, 0, len(psc.hosts))
+		for _, db := range psc.dbs {
+			c, err := db.Conn(context.Background())
+			if err != nil {
+				log.Fatal("establishing conn: ", err)
+			}
+			c.PingContext(context.Background())
+			workerConns = append(workerConns, c)
+			nConns++
+		}
+		psc.conns = append(psc.conns, workerConns)
+	}
+	log.Printf("connections established: %d", nConns)
+
 }
 
 func (psc *PostgreSQLClient) Teardown() {
@@ -267,7 +292,7 @@ func (psc *PostgreSQLClient) Teardown() {
 	}
 }
 
-func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder, bufpPool *sync.Pool, req serialized_messages.Request) {
+func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder, bufpPool *sync.Pool, req serialized_messages.Request, workerId int) {
 	builder.Reset()
 
 	if req.RequestUnionType() == serialized_messages.RequestUnionReadRequest {
@@ -288,8 +313,10 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 
 		// Begin PostgreSQL-specific read logic.
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
-		db := psc.dbs[rand.Intn(len(psc.dbs))]
-		rows, err := db.Query("SELECT val FROM tcsb.keyvalue WHERE key = $1 LIMIT 1", rr.KeyBytes())
+
+		myConns := psc.conns[workerId]
+		conn := myConns[rand.Intn(len(myConns))]
+		rows, err := conn.QueryContext(context.Background(), "SELECT val FROM keyvalue WHERE key = $1 LIMIT 1", rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
 		}
@@ -327,8 +354,9 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		bwr.Init(t.Bytes, t.Pos)
 
 		// Begin PostgreSQL-specific write logic.
-		db := psc.dbs[rand.Intn(len(psc.dbs))]
-		txn, err := db.Begin()
+		myConns := psc.conns[workerId]
+		conn := myConns[rand.Intn(len(myConns))]
+		txn, err := conn.BeginTx(context.Background(), nil)
 		if err != nil {
 			log.Fatal("error when creating a transaction")
 		}

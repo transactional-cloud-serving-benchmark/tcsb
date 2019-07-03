@@ -13,6 +13,8 @@ func DecodeNextCommand(r io.Reader, bufp *[]byte) (req serialized_messages.Reque
 		x := make([]byte, 0, 4)
 		bufp = &x
 	}
+	*bufp = (*bufp)[:cap(*bufp)]
+
 	if cap(*bufp) < 4 {
 		*bufp = append(*bufp, make([]byte, 4-cap(*bufp))...)
 	}

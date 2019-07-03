@@ -110,12 +110,21 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 				}
 
 				*cpi.bufp = (*cpi.bufp)[:0]
+				if cap(*cpi.bufp) < 4096 {
+					log.Fatal("logic error: cpi.bufp is too small")
+				}
 				bufpPool.Put(cpi.bufp)
 				cpi.bufp = nil
 
 				// The Builder contains the output bytes, so
 				// copy the data and send a new bufp along.
 				bufp := bufpPool.Get().(*[]byte)
+				if cap(*bufp) < 4096 {
+					log.Fatal("logic error: bufp is too small")
+				}
+				if cap(*bufp) < len(builder.FinishedBytes()) {
+					log.Fatalf("%d vs %d", cap(*bufp), len(builder.FinishedBytes()))
+				}
 				(*bufp) = (*bufp)[:len(builder.FinishedBytes())]
 				copy(*bufp, builder.FinishedBytes())
 
@@ -134,6 +143,9 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 		out.Write(*outputBufp)
 
 		*outputBufp = (*outputBufp)[:0]
+		if cap(*outputBufp) < 4096 {
+			log.Fatal("logic error: outputBufp is too small")
+		}
 		bufpPool.Put(outputBufp)
 	}
 }
@@ -212,12 +224,19 @@ func (psc *PostgreSQLClient) Setup() {
 
 		// Create table.
 		if psc.schemaMode == "simple_kv" {
-			_, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue; CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)")
+			if _, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue"); err != nil {
+				log.Fatal("error when dropping table: ", err)
+			}
+
+			if _, err = conn.ExecContext(context.Background(), "CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)"); err != nil {
+				log.Println("recoverable error when creating table: ", err)
+			}
+			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
+				log.Println("recoverable error when truncating table: ", err)
+			}
+
 		} else {
 			panic("logic error: unknown schema mode")
-		}
-		if err != nil {
-			log.Fatal("error when creating table: ", err)
 		}
 		if err = conn.Close(); err != nil {
 			log.Fatal("error when closing schema manipulation connection", err)
@@ -274,10 +293,18 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
 		}
-		err = rows.Scan(valbufp)
-		if err != nil {
-			log.Fatal("error during scanning of read query result", err)
-		}
+		rows.Next()
+		// N.B. calling rows.Scan on a []byte slice causes the sql library to malloc a new []byte object.
+		valbufpRawBytes := (*sql.RawBytes)(valbufp)
+		rows.Scan(valbufpRawBytes)
+		rows.Close()
+		//if ok := rows.Next(); !ok {
+		//	log.Fatal("error during calling Next on Rows of read query result", rows.Err())
+		//}
+		//err = rows.Scan(valbufp)
+		//if err != nil {
+		//	log.Fatal("error during scanning of read query result", err)
+		//}
 		// End PostgreSQL-specific query logic.
 
 		// Encode the read reply information for the IPC driver.
@@ -285,6 +312,9 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 
 		// Reset and store the bufp.
 		*valbufp = (*valbufp)[:0]
+		if cap(*valbufp) < 4096 {
+			log.Fatalf("what c %d", cap(*valbufp))
+		}
 		bufpPool.Put(valbufp)
 	} else if req.RequestUnionType() == serialized_messages.RequestUnionBatchWriteRequest {
 		// Decode batch write request:
@@ -306,13 +336,13 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 			kvp := serialized_messages.KeyValuePair{}
 			bwr.KeyValuePairs(&kvp, i)
 
-			_, err = txn.Exec(`INSERT INTO tcsb.keyvalue (key, val) VALUES ($1, $2)`, kvp.KeyBytes(), kvp.ValueBytes())
+			_, err = txn.Exec(`INSERT INTO keyvalue (key, val) VALUES ($1, $2)`, kvp.KeyBytes(), kvp.ValueBytes())
 			if err != nil {
 				txn.Rollback()
 				log.Fatal("composing transaction failed", err)
 			}
 		}
-		if err := txn.Commit; err != nil {
+		if err := txn.Commit(); err != nil {
 			log.Fatal("write transaction failed", err)
 		}
 		// End PostgreSQL-specific write logic.

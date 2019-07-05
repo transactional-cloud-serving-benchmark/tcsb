@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -104,11 +103,12 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 	for i := 0; i < nWorkers; i++ {
 		wg.Add(1)
 		go func(workerId int) {
+			nRequests := 0
 			builder := flatbuffers.NewBuilder(4096)
 			for cpi := range clientPoolInputs {
 				builder.Reset()
 
-				pgClient.HandleRequestResponse(builder, bufpPool, cpi.req, workerId)
+				pgClient.HandleRequestResponse(builder, bufpPool, cpi.req, workerId, nRequests)
 				if len(builder.FinishedBytes()) == 0 {
 					log.Fatal("bad reply serialization")
 				}
@@ -133,6 +133,7 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 				copy(*bufp, builder.FinishedBytes())
 
 				outputBufps <- bufp
+				nRequests++
 			}
 			wg.Done()
 		}(i)
@@ -292,7 +293,7 @@ func (psc *PostgreSQLClient) Teardown() {
 	}
 }
 
-func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder, bufpPool *sync.Pool, req serialized_messages.Request, workerId int) {
+func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder, bufpPool *sync.Pool, req serialized_messages.Request, workerId, nRequests int) {
 	builder.Reset()
 
 	if req.RequestUnionType() == serialized_messages.RequestUnionReadRequest {
@@ -315,7 +316,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
 
 		myConns := psc.conns[workerId]
-		conn := myConns[rand.Intn(len(myConns))]
+		conn := myConns[nRequests % len(myConns)]
 		rows, err := conn.QueryContext(context.Background(), "SELECT val FROM keyvalue WHERE key = $1 LIMIT 1", rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
@@ -355,7 +356,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 
 		// Begin PostgreSQL-specific write logic.
 		myConns := psc.conns[workerId]
-		conn := myConns[rand.Intn(len(myConns))]
+		conn := myConns[nRequests % len(myConns)]
 		txn, err := conn.BeginTx(context.Background(), nil)
 		if err != nil {
 			log.Fatal("error when creating a transaction")

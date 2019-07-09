@@ -166,6 +166,8 @@ type PostgreSQLClient struct {
 	dbs []*sql.DB
 
 	conns [][]*sql.Conn
+
+	preparedInsertStatements, preparedSelectStatements map[*sql.Conn]*sql.Stmt
 }
 
 func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
@@ -179,6 +181,9 @@ func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user strin
 
 		dbs: nil,
 		conns: nil,
+
+		preparedInsertStatements: nil,
+		preparedSelectStatements: nil,
 	}
 }
 
@@ -259,12 +264,15 @@ func (psc *PostgreSQLClient) Setup() {
 	log.Println("schema setup complete")
 
 	psc.dbs = make([]*sql.DB, 0)
+	psc.preparedInsertStatements = make(map[*sql.Conn]*sql.Stmt)
+	psc.preparedSelectStatements = make(map[*sql.Conn]*sql.Stmt)
 	for _, host := range psc.hosts {
 		connStr := fmt.Sprintf("host=%s port=%d user=%s dbname=tcsb sslmode=disable", host, psc.port, psc.user)
 		db, err := sql.Open("postgres", connStr)
 		if err != nil {
 			log.Fatal("failed to open database: ", err)
 		}
+
 		psc.dbs = append(psc.dbs, db)
 	}
 
@@ -280,6 +288,18 @@ func (psc *PostgreSQLClient) Setup() {
 			c.PingContext(context.Background())
 			workerConns = append(workerConns, c)
 			nConns++
+
+			stmt0, err := c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
+			if err != nil {
+				log.Fatal("failed to prepare insert statement: ", err)
+			}
+			stmt1, err := c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+			if err != nil {
+				log.Fatal("failed to prepare select statement: ", err)
+			}
+
+			psc.preparedInsertStatements[c] = stmt0
+			psc.preparedSelectStatements[c] = stmt1
 		}
 		psc.conns = append(psc.conns, workerConns)
 	}
@@ -317,7 +337,8 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests % len(myConns)]
-		rows, err := conn.QueryContext(context.Background(), "SELECT val FROM keyvalue WHERE key = $1 LIMIT 1", rr.KeyBytes())
+		preparedStmt := psc.preparedSelectStatements[conn]
+		rows, err := preparedStmt.Query(rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
 		}
@@ -357,6 +378,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Begin PostgreSQL-specific write logic.
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests % len(myConns)]
+		preparedInsertStmt := psc.preparedInsertStatements[conn]
 		txn, err := conn.BeginTx(context.Background(), nil)
 		if err != nil {
 			log.Fatal("error when creating a transaction")
@@ -365,7 +387,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 			kvp := serialized_messages.KeyValuePair{}
 			bwr.KeyValuePairs(&kvp, i)
 
-			_, err = txn.Exec(`INSERT INTO keyvalue (key, val) VALUES ($1, $2)`, kvp.KeyBytes(), kvp.ValueBytes())
+			_, err = txn.Stmt(preparedInsertStmt).Exec(kvp.KeyBytes(), kvp.ValueBytes())
 			if err != nil {
 				txn.Rollback()
 				log.Fatal("composing transaction failed", err)

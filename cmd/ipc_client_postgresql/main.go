@@ -12,7 +12,6 @@ import (
 
 	"github.com/google/flatbuffers/go"
 	_ "github.com/lib/pq" // implicitly used by database/sql
-	"github.com/lib/pq"
 	cli "gopkg.in/urfave/cli.v1"
 
 	"github.com/transactional-cloud-serving-benchmark/tcsb/serialization_util"
@@ -362,27 +361,17 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		if err != nil {
 			log.Fatal("error when creating a transaction")
 		}
-		batchStmt, err := txn.Prepare(pq.CopyIn("keyvalue", "key", "val"))
-		if err != nil {
-			log.Fatal("error when creating batchStmt")
-		}
 		for i := 0; i < bwr.KeyValuePairsLength(); i++ {
 			kvp := serialized_messages.KeyValuePair{}
 			bwr.KeyValuePairs(&kvp, i)
 
-			_, err = batchStmt.Exec(kvp.KeyBytes(), kvp.ValueBytes())
+			_, err = txn.Exec(`INSERT INTO keyvalue (key, val) VALUES ($1, $2)`, kvp.KeyBytes(), kvp.ValueBytes())
 			if err != nil {
+				txn.Rollback()
 				log.Fatal("composing transaction failed", err)
 			}
 		}
-		if _, err := batchStmt.Exec(); err != nil {
-			log.Fatal("batchStmt Exec failed", err)
-		}
-		if err := batchStmt.Close(); err != nil {
-			log.Fatal("batchStmt Close failed", err)
-		}
 		if err := txn.Commit(); err != nil {
-			txn.Rollback()
 			log.Fatal("write transaction failed", err)
 		}
 		// End PostgreSQL-specific write logic.
@@ -398,19 +387,3 @@ type clientPoolInput struct {
 	req  serialized_messages.Request
 	bufp *[]byte
 }
-
-//func BulkInsert(bufp *[]byte, unsavedRows []*ExampleRowStruct) error {
-//    *bufp = append(*bufp, "INSERT INTO keyvalue (key, value) VALUES %s", strings.Join(valueStrings, ","))
-//    stmt := fmt.Sprintf("INSERT INTO my_sample_table (column1, column2, column3) VALUES %s", strings.Join(valueStrings, ","))
-//    valueStrings := make([]string, 0, len(unsavedRows))
-//    valueArgs := make([]interface{}, 0, len(unsavedRows) * 3)
-//    for _, post := range unsavedRows {
-//        valueStrings = append(valueStrings, "(?, ?, ?)")
-//        valueArgs = append(valueArgs, post.Column1)
-//        valueArgs = append(valueArgs, post.Column2)
-//        valueArgs = append(valueArgs, post.Column3)
-//    }
-//    stmt := fmt.Sprintf("INSERT INTO my_sample_table (column1, column2, column3) VALUES %s", strings.Join(valueStrings, ","))
-//    _, err := db.Exec(stmt, valueArgs...)
-//    return err
-//}

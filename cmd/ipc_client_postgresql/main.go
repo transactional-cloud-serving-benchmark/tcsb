@@ -203,13 +203,7 @@ func (psc *PostgreSQLClient) Setup() {
 			log.Fatal("error when establishing conn for schema manipulation: ", err)
 		}
 
-		//// Drop logical database.
-		//_, err = conn.ExecContext(context.Background(), "DROP DATABASE IF EXISTS tcsb")
-		//if err != nil {
-		//	log.Fatal("error when dropping database", err)
-		//}
-
-		// Create logical database.
+		// Create logical database (if it already exists, move on).
 		_, err = conn.ExecContext(context.Background(), "CREATE DATABASE tcsb")
 		if err != nil {
 			log.Println("recoverable error when (re-)creating database", err)
@@ -362,7 +356,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Reset and store the bufp.
 		*valbufp = (*valbufp)[:0]
 		if cap(*valbufp) < 4096 {
-			log.Fatalf("what c %d", cap(*valbufp))
+			log.Fatalf("logic error, valbufp cap is %d", cap(*valbufp))
 		}
 		bufpPool.Put(valbufp)
 	} else if req.RequestUnionType() == serialized_messages.RequestUnionBatchWriteRequest {

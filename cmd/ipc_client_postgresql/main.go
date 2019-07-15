@@ -18,7 +18,7 @@ import (
 	"github.com/transactional-cloud-serving-benchmark/tcsb/serialized_messages"
 )
 
-var schemaModes map[string]struct{} = map[string]struct{}{"simple_kv": struct{}{}}
+var schemaModes map[string]struct{} = map[string]struct{}{"single_transactional_kv": struct{}{}}
 
 var logger *log.Logger
 
@@ -27,7 +27,7 @@ func main() {
 	app := cli.NewApp()
 	app.Flags = []cli.Flag{
 		cli.Uint64Flag{Name: "workers", Value: 1, Usage: "Number of parallel workers to use when submitting requests."},
-		cli.StringFlag{Name: "schema-mode", Value: "", Usage: "One of: [simple_kv]."},
+		cli.StringFlag{Name: "schema-mode", Value: "", Usage: "One of: [single_transactional_kv]."},
 		cli.StringFlag{Name: "hosts", Value: "127.0.0.1", Usage: "Comma-separated value of server hostnames. The first hostname will be used to set up the database schema."},
 		cli.IntFlag{Name: "port", Value: 5433, Usage: "DB port."},
 		cli.StringFlag{Name: "user", Value: "postgres", Usage: "DB user."},
@@ -231,7 +231,7 @@ func (psc *PostgreSQLClient) Setup() {
 		}
 
 		// Create table.
-		if psc.schemaMode == "simple_kv" {
+		if psc.schemaMode == "single_transactional_kv" {
 			if _, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue"); err != nil {
 				log.Fatal("error when dropping table: ", err)
 			}
@@ -374,23 +374,39 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Begin PostgreSQL-specific write logic.
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests%len(myConns)]
-		preparedInsertStmt := psc.preparedInsertStatements[conn]
-		txn, err := conn.BeginTx(context.Background(), nil)
-		if err != nil {
-			log.Fatal("error when creating a transaction")
-		}
-		for i := 0; i < bwr.KeyValuePairsLength(); i++ {
-			kvp := serialized_messages.KeyValuePair{}
-			bwr.KeyValuePairs(&kvp, i)
-
-			_, err = txn.Stmt(preparedInsertStmt).Exec(kvp.KeyBytes(), kvp.ValueBytes())
-			if err != nil {
-				txn.Rollback()
-				log.Fatal("composing transaction failed", err)
+		if psc.schemaMode == "single_transactional_kv" {
+			if bwr.KeyValuePairsLength() != 1 {
+				log.Fatal("single_transactional_kv needs writes of size 1")
 			}
-		}
-		if err := txn.Commit(); err != nil {
-			log.Fatal("write transaction failed", err)
+			kvp := serialized_messages.KeyValuePair{}
+			bwr.KeyValuePairs(&kvp, 0)
+			preparedInsertStmt := psc.preparedInsertStatements[conn]
+			if _, err := preparedInsertStmt.Exec(kvp.KeyBytes(), kvp.ValueBytes()); err != nil {
+				log.Fatal("write transaction failed", err)
+			}
+		} else {
+			// This code path is temporarily disabled while we change how we do schema setup.
+			log.Fatal("unsupported batch-transactional insert mode")
+			// preparedInsertStmt := psc.preparedInsertStatements[conn]
+		        // txn, err := conn.BeginTx(context.Background(), nil)
+		        // if err != nil {
+		        // 	log.Fatal("error when creating a transaction")
+		        // }
+		        // for i := 0; i < bwr.KeyValuePairsLength(); i++ {
+		        // 	if i > 0 {
+		        // 	}
+		        // 	kvp := serialized_messages.KeyValuePair{}
+		        // 	bwr.KeyValuePairs(&kvp, i)
+
+		        // 	_, err = txn.Stmt(preparedInsertStmt).Exec(kvp.KeyBytes(), kvp.ValueBytes())
+		        // 	if err != nil {
+		        // 		txn.Rollback()
+		        // 		log.Fatal("composing transaction failed", err)
+		        // 	}
+		        // }
+		        // if err := txn.Commit(); err != nil {
+		        // 	log.Fatal("write transaction failed", err)
+		        // }
 		}
 		// End PostgreSQL-specific write logic.
 

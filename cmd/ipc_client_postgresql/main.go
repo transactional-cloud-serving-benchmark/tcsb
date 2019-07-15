@@ -296,6 +296,9 @@ func (psc *PostgreSQLClient) Setup() {
 			psc.preparedSelectStatements[c] = stmt1
 		}
 		psc.conns = append(psc.conns, workerConns)
+		if i > 0 && i % 10 == 0 {
+			log.Printf("%d workers set up", i)
+		}
 	}
 	log.Printf("connections established: %d", nConns)
 

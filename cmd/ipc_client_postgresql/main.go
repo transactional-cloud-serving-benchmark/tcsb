@@ -2,10 +2,10 @@ package main
 
 import (
 	"bufio"
-	"log"
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -23,7 +23,6 @@ var schemaModes map[string]struct{} = map[string]struct{}{"simple_kv": struct{}{
 var logger *log.Logger
 
 func main() {
-
 
 	app := cli.NewApp()
 	app.Flags = []cli.Flag{
@@ -157,7 +156,7 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 
 type PostgreSQLClient struct {
 	schemaMode string
-	nWorkers int
+	nWorkers   int
 
 	hosts []string
 	port  int
@@ -173,13 +172,13 @@ type PostgreSQLClient struct {
 func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
 	return &PostgreSQLClient{
 		schemaMode: schemaMode,
-		nWorkers: nWorkers,
+		nWorkers:   nWorkers,
 
 		hosts: hosts,
 		port:  port,
 		user:  user,
 
-		dbs: nil,
+		dbs:   nil,
 		conns: nil,
 
 		preparedInsertStatements: nil,
@@ -296,7 +295,7 @@ func (psc *PostgreSQLClient) Setup() {
 			psc.preparedSelectStatements[c] = stmt1
 		}
 		psc.conns = append(psc.conns, workerConns)
-		if i > 0 && i % 10 == 0 {
+		if i > 0 && i%10 == 0 {
 			log.Printf("%d workers set up", i)
 		}
 	}
@@ -333,7 +332,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
 
 		myConns := psc.conns[workerId]
-		conn := myConns[nRequests % len(myConns)]
+		conn := myConns[nRequests%len(myConns)]
 		preparedStmt := psc.preparedSelectStatements[conn]
 		rows, err := preparedStmt.Query(rr.KeyBytes())
 		if err != nil {
@@ -374,7 +373,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 
 		// Begin PostgreSQL-specific write logic.
 		myConns := psc.conns[workerId]
-		conn := myConns[nRequests % len(myConns)]
+		conn := myConns[nRequests%len(myConns)]
 		preparedInsertStmt := psc.preparedInsertStatements[conn]
 		txn, err := conn.BeginTx(context.Background(), nil)
 		if err != nil {

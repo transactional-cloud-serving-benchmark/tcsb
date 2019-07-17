@@ -30,6 +30,10 @@ type ReplyCollector struct {
 	validations, burnins        uint64
 	readOps, writeOps           uint64
 	readRequests, writeRequests uint64
+
+	totalReadLatencyNanos, totalWriteLatencyNanos uint64
+	readLatencyNanosMin, readLatencyNanosMax      uint64
+	writeLatencyNanosMin, writeLatencyNanosMax    uint64
 }
 
 func NewReplyCollector(nBurnIn, nValidation uint64, validationFilename string) *ReplyCollector {
@@ -45,6 +49,14 @@ func NewReplyCollector(nBurnIn, nValidation uint64, validationFilename string) *
 
 		doingBurnIn:     nBurnIn > 0,
 		doingValidation: nValidation > 0,
+
+		totalReadLatencyNanos:  0,
+		totalWriteLatencyNanos: 0,
+
+		readLatencyNanosMin:  0xFFFFFFFFFFFFFFFF,
+		readLatencyNanosMax:  0,
+		writeLatencyNanosMin: 0xFFFFFFFFFFFFFFFF,
+		writeLatencyNanosMax: 0,
 	}
 
 	if rc.doingValidation {
@@ -83,6 +95,7 @@ func (rc *ReplyCollector) Update(reply serialized_messages.Reply) {
 		} else {
 			rc.readOps++
 			rc.readRequests++
+			rc.updateLatenciesWithReadOp(rr.LatencyNanos())
 		}
 
 		// If validation is occurring, print the result, then check if
@@ -118,6 +131,7 @@ func (rc *ReplyCollector) Update(reply serialized_messages.Reply) {
 		} else {
 			rc.writeOps += rr.NWrites()
 			rc.writeRequests++
+			rc.updateLatenciesWithWriteOp(rr.LatencyNanos())
 		}
 	} else {
 		log.Fatal("unknown ReplyUnionType")
@@ -135,6 +149,38 @@ func (rc *ReplyCollector) Finish() {
 	rc.printStats()
 }
 
+func (rc *ReplyCollector) updateLatenciesWithReadOp(latencyNanos uint64) {
+	rc.totalReadLatencyNanos += latencyNanos
+	if latencyNanos < rc.readLatencyNanosMin {
+		rc.readLatencyNanosMin = latencyNanos
+	}
+	if latencyNanos > rc.readLatencyNanosMax {
+		rc.readLatencyNanosMax = latencyNanos
+	}
+}
+
+func (rc *ReplyCollector) updateLatenciesWithWriteOp(latencyNanos uint64) {
+	rc.totalWriteLatencyNanos += latencyNanos
+	if latencyNanos < rc.writeLatencyNanosMin {
+		rc.writeLatencyNanosMin = latencyNanos
+	}
+	if latencyNanos > rc.writeLatencyNanosMax {
+		rc.writeLatencyNanosMax = latencyNanos
+	}
+}
+
+func (rc *ReplyCollector) readLatencyNanosMean() uint64 {
+	if rc.readOps == 0 {
+		return 0
+	}
+	return rc.totalReadLatencyNanos / rc.readOps
+}
+func (rc *ReplyCollector) writeLatencyNanosMean() uint64 {
+	if rc.writeOps == 0 {
+		return 0
+	}
+	return rc.totalWriteLatencyNanos / rc.writeOps
+}
 func (rc *ReplyCollector) printStats() {
 	end := time.Now()
 	tookNanos := float64(end.Sub(rc.start).Nanoseconds())
@@ -150,6 +196,13 @@ func (rc *ReplyCollector) printStats() {
 	fmt.Printf("  %d total operations\n", rc.readOps+rc.writeOps)
 	fmt.Printf("  %.1f average write ops/sec\n", float64(rc.writeOps)/secs)
 	fmt.Printf("  %.1f average read ops/sec\n", float64(rc.readOps)/secs)
+	fmt.Printf("  %.1f average write+read ops/sec\n", float64(rc.writeOps+rc.readOps)/secs)
+	fmt.Printf("  %.1f/%.1f/%1.f min/mean/max read op latency in ms\n", nanosToMillis(rc.readLatencyNanosMin), nanosToMillis(rc.readLatencyNanosMean()), nanosToMillis(rc.readLatencyNanosMax))
+	fmt.Printf("  %.1f/%.1f/%1.f min/mean/max write op latency in ms\n", nanosToMillis(rc.writeLatencyNanosMin), nanosToMillis(rc.writeLatencyNanosMean()), nanosToMillis(rc.writeLatencyNanosMax))
 	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/read op\n", int64(tookNanos/float64(rc.readOps)))
 	// TODO(rw): ensure this is sensible fmt.Printf("  %d ns/write op\n", int64(tookNanos/float64(rc.writeOps)))
+}
+
+func nanosToMillis(nanos uint64) float64 {
+	return float64(nanos) / 1e6
 }

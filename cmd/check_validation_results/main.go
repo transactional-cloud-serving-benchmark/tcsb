@@ -28,7 +28,7 @@ func main() {
 	// input, checking that the scanners match up with each other.
 	statuses := make([]bool, 0, len(scanners))
 	texts := make([][]byte, 0, len(scanners))
-	i := 0
+	mismatches, i := 0, 0
 	for {
 		statuses = statuses[:0]
 		texts = texts[:0]
@@ -46,7 +46,8 @@ func main() {
 		}
 
 		if seenFalse && seenTrue {
-			log.Fatalf("some scanners terminated while others did not. line %d: %v", i, statuses)
+			log.Printf("some scanners terminated while others did not. line %d: %v", i, statuses)
+			break
 		}
 
 		if seenFalse {
@@ -60,11 +61,16 @@ func main() {
 
 		for _, text := range texts[1:] {
 			if !bytes.Equal(text, texts[0]) {
-				log.Fatalf("mismatched input on line %d: %v", i, texts)
+				log.Printf("mismatched input on line %d: %v", i, texts)
+				mismatches++
 			}
 		}
 
 		i++
+	}
+
+	if ratio := float64(mismatches) / float64(i); ratio >= 0.1 {
+		log.Fatalf("mismatch ratio too high: %f", ratio)
 	}
 
 	log.Printf("validation completed successfully. %d lines.", i)

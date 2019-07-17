@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/flatbuffers/go"
 	_ "github.com/lib/pq" // implicitly used by database/sql
@@ -334,6 +335,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests%len(myConns)]
 		preparedStmt := psc.preparedSelectStatements[conn]
+		start := time.Now()
 		rows, err := preparedStmt.Query(rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
@@ -343,6 +345,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		valbufpRawBytes := (*sql.RawBytes)(valbufp)
 		rows.Scan(valbufpRawBytes)
 		rows.Close()
+		latencyNanos := uint64(time.Since(start).Nanoseconds())
 		//if ok := rows.Next(); !ok {
 		//	log.Fatal("error during calling Next on Rows of read query result", rows.Err())
 		//}
@@ -353,7 +356,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// End PostgreSQL-specific query logic.
 
 		// Encode the read reply information for the IPC driver.
-		serialization_util.EncodeReadReplyWithFraming(builder, rr.KeyBytes(), *valbufp)
+		serialization_util.EncodeReadReplyWithFraming(builder, rr.KeyBytes(), *valbufp, latencyNanos)
 
 		// Reset and store the bufp.
 		*valbufp = (*valbufp)[:0]
@@ -374,6 +377,7 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Begin PostgreSQL-specific write logic.
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests%len(myConns)]
+		start := time.Now()
 		if psc.schemaMode == "single_transactional_kv" {
 			if bwr.KeyValuePairsLength() != 1 {
 				log.Fatal("single_transactional_kv needs writes of size 1")
@@ -409,9 +413,10 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		        // }
 		}
 		// End PostgreSQL-specific write logic.
+		latencyNanos := uint64(time.Since(start).Nanoseconds())
 
 		// Encode the batch write reply information for the IPC driver.
-		serialization_util.EncodeBatchWriteReplyWithFraming(builder, uint64(bwr.KeyValuePairsLength()))
+		serialization_util.EncodeBatchWriteReplyWithFraming(builder, uint64(bwr.KeyValuePairsLength()), latencyNanos)
 	} else {
 		log.Fatal("logic error: invalid request type")
 	}

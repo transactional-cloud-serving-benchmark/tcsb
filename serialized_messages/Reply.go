@@ -50,8 +50,8 @@ func (rcv *Reply) ReplyUnion(obj *flatbuffers.Table) bool {
 func ReplyStart(builder *flatbuffers.Builder) {
 	builder.StartObject(2)
 }
-func ReplyAddReplyUnionType(builder *flatbuffers.Builder, replyUnionType byte) {
-	builder.PrependByteSlot(0, replyUnionType, 0)
+func ReplyAddReplyUnionType(builder *flatbuffers.Builder, replyUnionType ReplyUnion) {
+	builder.PrependByteSlot(0, byte(replyUnionType), 0)
 }
 func ReplyAddReplyUnion(builder *flatbuffers.Builder, replyUnion flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(replyUnion), 0)

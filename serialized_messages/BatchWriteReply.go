@@ -38,11 +38,26 @@ func (rcv *BatchWriteReply) MutateNWrites(n uint64) bool {
 	return rcv._tab.MutateUint64Slot(4, n)
 }
 
+func (rcv *BatchWriteReply) LatencyNanos() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(6))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *BatchWriteReply) MutateLatencyNanos(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(6, n)
+}
+
 func BatchWriteReplyStart(builder *flatbuffers.Builder) {
-	builder.StartObject(1)
+	builder.StartObject(2)
 }
 func BatchWriteReplyAddNWrites(builder *flatbuffers.Builder, nWrites uint64) {
 	builder.PrependUint64Slot(0, nWrites, 0)
+}
+func BatchWriteReplyAddLatencyNanos(builder *flatbuffers.Builder, latencyNanos uint64) {
+	builder.PrependUint64Slot(1, latencyNanos, 0)
 }
 func BatchWriteReplyEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

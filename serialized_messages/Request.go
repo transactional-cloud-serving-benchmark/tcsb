@@ -50,8 +50,8 @@ func (rcv *Request) RequestUnion(obj *flatbuffers.Table) bool {
 func RequestStart(builder *flatbuffers.Builder) {
 	builder.StartObject(2)
 }
-func RequestAddRequestUnionType(builder *flatbuffers.Builder, requestUnionType byte) {
-	builder.PrependByteSlot(0, requestUnionType, 0)
+func RequestAddRequestUnionType(builder *flatbuffers.Builder, requestUnionType RequestUnion) {
+	builder.PrependByteSlot(0, byte(requestUnionType), 0)
 }
 func RequestAddRequestUnion(builder *flatbuffers.Builder, requestUnion flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(1, flatbuffers.UOffsetT(requestUnion), 0)

@@ -94,8 +94,20 @@ func (rcv *ReadReply) MutateValue(j int, n byte) bool {
 	return false
 }
 
+func (rcv *ReadReply) LatencyNanos() uint64 {
+	o := flatbuffers.UOffsetT(rcv._tab.Offset(8))
+	if o != 0 {
+		return rcv._tab.GetUint64(o + rcv._tab.Pos)
+	}
+	return 0
+}
+
+func (rcv *ReadReply) MutateLatencyNanos(n uint64) bool {
+	return rcv._tab.MutateUint64Slot(8, n)
+}
+
 func ReadReplyStart(builder *flatbuffers.Builder) {
-	builder.StartObject(2)
+	builder.StartObject(3)
 }
 func ReadReplyAddKey(builder *flatbuffers.Builder, key flatbuffers.UOffsetT) {
 	builder.PrependUOffsetTSlot(0, flatbuffers.UOffsetT(key), 0)
@@ -108,6 +120,9 @@ func ReadReplyAddValue(builder *flatbuffers.Builder, value flatbuffers.UOffsetT)
 }
 func ReadReplyStartValueVector(builder *flatbuffers.Builder, numElems int) flatbuffers.UOffsetT {
 	return builder.StartVector(1, numElems, 1)
+}
+func ReadReplyAddLatencyNanos(builder *flatbuffers.Builder, latencyNanos uint64) {
+	builder.PrependUint64Slot(2, latencyNanos, 0)
 }
 func ReadReplyEnd(builder *flatbuffers.Builder) flatbuffers.UOffsetT {
 	return builder.EndObject()

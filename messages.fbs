@@ -32,11 +32,13 @@ table Request {
 table ReadReply {
     key: [ubyte];
     value: [ubyte];
+    latency_nanos: ulong;
 }
 
 // BatchWriteReply stores the count of items written.
 table BatchWriteReply {
     n_writes: ulong;
+    latency_nanos: ulong;
 }
 
 // ReplyUnion stores the different types of replies.

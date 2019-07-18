@@ -243,10 +243,10 @@ func (psc *PostgreSQLClient) Setup() {
 			}
 
 			if _, err = conn.ExecContext(context.Background(), "CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)"); err != nil {
-				log.Println("recoverable error when creating table: ", err)
+				log.Fatal("error when creating table: ", err)
 			}
 			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
-				log.Println("recoverable error when truncating table: ", err)
+				log.Fatal("recoverable error when truncating table: ", err)
 			}
 
 		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
@@ -255,13 +255,13 @@ func (psc *PostgreSQLClient) Setup() {
 			}
 
 			if _, err = conn.ExecContext(context.Background(), "CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)"); err != nil {
-				log.Println("recoverable error when creating table: ", err)
+				log.Fatal("error when creating table: ", err)
 			}
-			if _, err = conn.ExecContext(context.Background(), "CREATE INDEX keyvalue (val)"); err != nil {
-				log.Println("recoverable error when creating table: ", err)
+			if _, err = conn.ExecContext(context.Background(), "CREATE INDEX ON keyvalue (val)"); err != nil {
+				log.Fatal("error when creating index: ", err)
 			}
 			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
-				log.Println("recoverable error when truncating table: ", err)
+				log.Fatalf("error when truncating table: ", err)
 			}
 		} else {
 			panic("logic error: unknown schema mode")

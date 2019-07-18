@@ -25,6 +25,7 @@ type KeyValueScenario struct {
 
 	WriteBatchSize int
 	KeyLen, ValLen int
+	ReadOpUsesKey  bool
 }
 
 func (s *KeyValueScenario) SetDatabaseKindByName(x string) error {
@@ -70,7 +71,7 @@ func (s *KeyValueScenario) SetParamsFromString(x string) error {
 		m[key] = val
 	}
 
-	req_params := []string{"seed", "write_ratio", "command_count", "key_ordering", "key_len", "val_len", "write_batch_size"}
+	req_params := []string{"seed", "write_ratio", "command_count", "key_ordering", "key_len", "val_len", "write_batch_size", "read_op_uses_key"}
 	for _, k := range req_params {
 		if _, ok := m[k]; !ok {
 			return fmt.Errorf("required param: %s", k)
@@ -128,6 +129,12 @@ outer:
 	} else {
 		return err
 	}
+
+	if b, err := strconv.ParseBool(m["read_op_uses_key"]); err == nil {
+		s.ReadOpUsesKey = b
+	} else {
+		return err
+	}
 	return nil
 }
 
@@ -170,7 +177,11 @@ func (s *KeyValueScenario) NewEmitter(w io.Writer) Emitter {
 
 		if opRead {
 			setKVBacking(1)
-			ops.NextReadOp(keys[0])
+			if s.ReadOpUsesKey {
+				ops.NextReadOp(keys[0])
+			} else {
+				ops.NextReadOp(vals[0])
+			}
 			commandsGenerated++
 		} else {
 			setKVBacking(s.WriteBatchSize)
@@ -182,13 +193,13 @@ func (s *KeyValueScenario) NewEmitter(w io.Writer) Emitter {
 		}
 
 		if s.EmitMode == "debug" {
-			emitDebugKeyValue(commandsGenerated, batchIdx, w, opRead, keys, vals)
+			emitDebugKeyValue(commandsGenerated, batchIdx, w, opRead, s.ReadOpUsesKey, keys, vals)
 		} else {
 			if builder == nil {
 				builder = flatbuffers.NewBuilder(1024)
 			}
 
-			emitFlatBuffersKeyValue(builder, batchIdx, w, opRead, keys, vals)
+			emitFlatBuffersKeyValue(builder, batchIdx, w, opRead, s.ReadOpUsesKey, keys, vals)
 		}
 
 		keys = keys[:0]
@@ -200,32 +211,46 @@ func (s *KeyValueScenario) NewEmitter(w io.Writer) Emitter {
 	}
 }
 
-func emitDebugKeyValue(commandsGenerated, batchIdx int64, w io.Writer, opRead bool, keys, vals [][]byte) {
+func emitDebugKeyValue(commandsGenerated, batchIdx int64, w io.Writer, opRead, readOpUsesKey bool, keys, vals [][]byte) {
 	startingId := int(commandsGenerated) - len(keys)
 	for j, _ := range keys {
 		if opRead {
-			fmt.Fprintf(w, "%d %d %d r %s\n", startingId+j, batchIdx, j, keys[j])
+			var keydata []byte
+			if readOpUsesKey {
+				keydata = keys[j]
+			} else {
+				keydata = vals[j]
+			}
+			fmt.Fprintf(w, "%d %d %d r %s\n", startingId+j, batchIdx, j, keydata)
 		} else {
 			fmt.Fprintf(w, "%d %d %d w %s %s\n", startingId+j, batchIdx, j, keys[j], vals[j])
 		}
 	}
 }
 
-func emitFlatBuffersKeyValue(builder *flatbuffers.Builder, i int64, w io.Writer, opRead bool, keys, vals [][]byte) {
+func emitFlatBuffersKeyValue(builder *flatbuffers.Builder, i int64, w io.Writer, opRead, readOpUsesKey bool, keys, vals [][]byte) {
 	builder.Reset()
 
 	if opRead {
 		if len(keys) != 1 {
 			log.Fatal("bad assumption in scenario generation")
 		}
-		keyOffset := builder.CreateByteVector(keys[0])
+
+		var keydata []byte
+		if readOpUsesKey {
+			keydata = keys[0]
+		} else {
+			keydata = vals[0]
+		}
+
+		keyOffset := builder.CreateByteVector(keydata)
 
 		serialized_messages.ReadRequestStart(builder)
 		serialized_messages.ReadRequestAddKey(builder, keyOffset)
 		rrOffset := serialized_messages.ReadRequestEnd(builder)
 
 		serialized_messages.RequestStart(builder)
-		serialized_messages.RequestAddRequestUnionType(builder, byte(serialized_messages.RequestUnionReadRequest))
+		serialized_messages.RequestAddRequestUnionType(builder, serialized_messages.RequestUnionReadRequest)
 		serialized_messages.RequestAddRequestUnion(builder, rrOffset)
 		reqOffset := serialized_messages.RequestEnd(builder)
 
@@ -255,7 +280,7 @@ func emitFlatBuffersKeyValue(builder *flatbuffers.Builder, i int64, w io.Writer,
 		bwrOffset := serialized_messages.BatchWriteRequestEnd(builder)
 
 		serialized_messages.RequestStart(builder)
-		serialized_messages.RequestAddRequestUnionType(builder, byte(serialized_messages.RequestUnionBatchWriteRequest))
+		serialized_messages.RequestAddRequestUnionType(builder, serialized_messages.RequestUnionBatchWriteRequest)
 		serialized_messages.RequestAddRequestUnion(builder, bwrOffset)
 		reqOffset := serialized_messages.RequestEnd(builder)
 

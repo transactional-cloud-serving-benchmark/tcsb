@@ -19,7 +19,12 @@ import (
 	"github.com/transactional-cloud-serving-benchmark/tcsb/serialized_messages"
 )
 
-var schemaModes map[string]struct{} = map[string]struct{}{"single_transactional_kv": struct{}{}}
+const (
+	SubScenarioKV                         string = "kv"
+	SubScenarioKVWithSecondaryIndexLookup string = "kv_by_value"
+)
+
+var schemaModes map[string]struct{} = map[string]struct{}{SubScenarioKV: struct{}{}, SubScenarioKVWithSecondaryIndexLookup: struct{}{}}
 
 var logger *log.Logger
 
@@ -28,7 +33,7 @@ func main() {
 	app := cli.NewApp()
 	app.Flags = []cli.Flag{
 		cli.Uint64Flag{Name: "workers", Value: 1, Usage: "Number of parallel workers to use when submitting requests."},
-		cli.StringFlag{Name: "schema-mode", Value: "", Usage: "One of: [single_transactional_kv]."},
+		cli.StringFlag{Name: "schema-mode", Value: "", Usage: "One of: [kv, kv_by_value]."},
 		cli.StringFlag{Name: "hosts", Value: "127.0.0.1", Usage: "Comma-separated value of server hostnames. The first hostname will be used to set up the database schema."},
 		cli.IntFlag{Name: "port", Value: 5433, Usage: "DB port."},
 		cli.StringFlag{Name: "user", Value: "postgres", Usage: "DB user."},
@@ -232,7 +237,7 @@ func (psc *PostgreSQLClient) Setup() {
 		}
 
 		// Create table.
-		if psc.schemaMode == "single_transactional_kv" {
+		if psc.schemaMode == SubScenarioKV {
 			if _, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue"); err != nil {
 				log.Fatal("error when dropping table: ", err)
 			}
@@ -244,6 +249,20 @@ func (psc *PostgreSQLClient) Setup() {
 				log.Println("recoverable error when truncating table: ", err)
 			}
 
+		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
+			if _, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue"); err != nil {
+				log.Fatal("error when dropping table: ", err)
+			}
+
+			if _, err = conn.ExecContext(context.Background(), "CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)"); err != nil {
+				log.Println("recoverable error when creating table: ", err)
+			}
+			if _, err = conn.ExecContext(context.Background(), "CREATE INDEX keyvalue (val)"); err != nil {
+				log.Println("recoverable error when creating table: ", err)
+			}
+			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
+				log.Println("recoverable error when truncating table: ", err)
+			}
 		} else {
 			panic("logic error: unknown schema mode")
 		}
@@ -283,17 +302,32 @@ func (psc *PostgreSQLClient) Setup() {
 			workerConns = append(workerConns, c)
 			nConns++
 
-			stmt0, err := c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
-			if err != nil {
-				log.Fatal("failed to prepare insert statement: ", err)
-			}
-			stmt1, err := c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
-			if err != nil {
-				log.Fatal("failed to prepare select statement: ", err)
+			var insertStmt, selectStmt *sql.Stmt
+
+			if psc.schemaMode == SubScenarioKV {
+				insertStmt, err = c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
+				if err != nil {
+					log.Fatal("failed to prepare insert statement: ", err)
+				}
+				selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+				if err != nil {
+					log.Fatal("failed to prepare select statement: ", err)
+				}
+			} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
+				insertStmt, err = c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
+				if err != nil {
+					log.Fatal("failed to prepare insert statement: ", err)
+				}
+				selectStmt, err = c.PrepareContext(context.Background(), `SELECT key FROM keyvalue WHERE val = $1 LIMIT 1`)
+				if err != nil {
+					log.Fatal("failed to prepare select statement: ", err)
+				}
+			} else {
+				log.Fatal("unknown schema mode")
 			}
 
-			psc.preparedInsertStatements[c] = stmt0
-			psc.preparedSelectStatements[c] = stmt1
+			psc.preparedInsertStatements[c] = insertStmt
+			psc.preparedSelectStatements[c] = selectStmt
 		}
 		psc.conns = append(psc.conns, workerConns)
 		if i > 0 && i%10 == 0 {
@@ -301,7 +335,6 @@ func (psc *PostgreSQLClient) Setup() {
 		}
 	}
 	log.Printf("connections established: %d", nConns)
-
 }
 
 func (psc *PostgreSQLClient) Teardown() {
@@ -378,9 +411,9 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		myConns := psc.conns[workerId]
 		conn := myConns[nRequests%len(myConns)]
 		start := time.Now()
-		if psc.schemaMode == "single_transactional_kv" {
+		if psc.schemaMode == SubScenarioKV || psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
 			if bwr.KeyValuePairsLength() != 1 {
-				log.Fatal("single_transactional_kv needs writes of size 1")
+				log.Fatal("kv needs writes of size 1")
 			}
 			kvp := serialized_messages.KeyValuePair{}
 			bwr.KeyValuePairs(&kvp, 0)
@@ -392,25 +425,25 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 			// This code path is temporarily disabled while we change how we do schema setup.
 			log.Fatal("unsupported batch-transactional insert mode")
 			// preparedInsertStmt := psc.preparedInsertStatements[conn]
-		        // txn, err := conn.BeginTx(context.Background(), nil)
-		        // if err != nil {
-		        // 	log.Fatal("error when creating a transaction")
-		        // }
-		        // for i := 0; i < bwr.KeyValuePairsLength(); i++ {
-		        // 	if i > 0 {
-		        // 	}
-		        // 	kvp := serialized_messages.KeyValuePair{}
-		        // 	bwr.KeyValuePairs(&kvp, i)
+			// txn, err := conn.BeginTx(context.Background(), nil)
+			// if err != nil {
+			// 	log.Fatal("error when creating a transaction")
+			// }
+			// for i := 0; i < bwr.KeyValuePairsLength(); i++ {
+			// 	if i > 0 {
+			// 	}
+			// 	kvp := serialized_messages.KeyValuePair{}
+			// 	bwr.KeyValuePairs(&kvp, i)
 
-		        // 	_, err = txn.Stmt(preparedInsertStmt).Exec(kvp.KeyBytes(), kvp.ValueBytes())
-		        // 	if err != nil {
-		        // 		txn.Rollback()
-		        // 		log.Fatal("composing transaction failed", err)
-		        // 	}
-		        // }
-		        // if err := txn.Commit(); err != nil {
-		        // 	log.Fatal("write transaction failed", err)
-		        // }
+			// 	_, err = txn.Stmt(preparedInsertStmt).Exec(kvp.KeyBytes(), kvp.ValueBytes())
+			// 	if err != nil {
+			// 		txn.Rollback()
+			// 		log.Fatal("composing transaction failed", err)
+			// 	}
+			// }
+			// if err := txn.Commit(); err != nil {
+			// 	log.Fatal("write transaction failed", err)
+			// }
 		}
 		// End PostgreSQL-specific write logic.
 		latencyNanos := uint64(time.Since(start).Nanoseconds())

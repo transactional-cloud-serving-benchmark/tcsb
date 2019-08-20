@@ -302,7 +302,6 @@ func (psc *PostgreSQLClient) Setup() {
 		nConns++
 
 		var insertStmt, selectStmt *sql.Stmt
-
 		s := `INSERT INTO keyvalue (key, val) VALUES`
 		for paramIdx := 0; paramIdx < psc.writeBatchSize; paramIdx++ {
 			// 1-indexed pairs
@@ -310,8 +309,8 @@ func (psc *PostgreSQLClient) Setup() {
 				s += ", "
 			}
 			s += fmt.Sprintf(" ($%d, $%d)", (2*paramIdx) + 1, (2*paramIdx)+2)
-			insertStmt, err = c.PrepareContext(context.Background(), s)
 		}
+		insertStmt, err = c.PrepareContext(context.Background(), s)
 		println(s)
 		if err != nil {
 			log.Fatal("failed to prepare insert statement: ", err)
@@ -323,7 +322,7 @@ func (psc *PostgreSQLClient) Setup() {
 				log.Fatal("failed to prepare select statement: ", err)
 			}
 		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
-			//selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+			selectStmt, err = c.PrepareContext(context.Background(), `SELECT key FROM keyvalue WHERE val = $1 LIMIT 1`)
 			if err != nil {
 				log.Fatal("failed to prepare select statement: ", err)
 			}

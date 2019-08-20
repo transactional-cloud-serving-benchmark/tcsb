@@ -34,6 +34,7 @@ func main() {
 	app.Flags = []cli.Flag{
 		cli.Uint64Flag{Name: "workers", Value: 1, Usage: "Number of parallel workers to use when submitting requests."},
 		cli.StringFlag{Name: "schema-mode", Value: "", Usage: "One of: [kv, kv_by_value]."},
+		cli.IntFlag{Name: "write-batch-size", Value: 1, Usage: "Must match the parameter of the generated workload."},
 		cli.StringFlag{Name: "hosts", Value: "127.0.0.1", Usage: "Comma-separated value of server hostnames. The first hostname will be used to set up the database schema."},
 		cli.IntFlag{Name: "port", Value: 5433, Usage: "DB port."},
 		cli.StringFlag{Name: "user", Value: "postgres", Usage: "DB user."},
@@ -44,6 +45,9 @@ func main() {
 			log.Fatalf("invalid schema-mode. choose from %v", schemaModes)
 		}
 		log.Printf("Schema mode: %v\n", schemaMode)
+
+		writeBatchSize := c.Int("write-batch-size")
+		log.Printf("Write-batch-size: %d\n", writeBatchSize)
 
 		hostsCsv := c.String("hosts")
 		hosts := strings.Split(hostsCsv, ",")
@@ -58,7 +62,7 @@ func main() {
 		user := c.String("user")
 		log.Printf("User: %s\n", user)
 
-		run(schemaMode, hosts, port, user, nWorkers)
+		run(schemaMode, writeBatchSize, hosts, port, user, nWorkers)
 		return nil
 	}
 
@@ -68,7 +72,7 @@ func main() {
 	}
 }
 
-func run(schemaMode string, hosts []string, port int, user string, nWorkers int) {
+func run(schemaMode string, writeBatchSize int, hosts []string, port int, user string, nWorkers int) {
 	bufpPool := &sync.Pool{
 		New: func() interface{} {
 			x := make([]byte, 0, 4096)
@@ -83,7 +87,7 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 		os.Stdout.Close()
 	}()
 
-	pgClient := NewPostgreSQLClient(schemaMode, hosts, port, user, nWorkers)
+	pgClient := NewPostgreSQLClient(schemaMode, writeBatchSize, hosts, port, user, nWorkers)
 	pgClient.Setup()
 	defer pgClient.Teardown()
 
@@ -161,8 +165,9 @@ func run(schemaMode string, hosts []string, port int, user string, nWorkers int)
 }
 
 type PostgreSQLClient struct {
-	schemaMode string
-	nWorkers   int
+	schemaMode     string
+	writeBatchSize int
+	nWorkers       int
 
 	hosts []string
 	port  int
@@ -170,22 +175,23 @@ type PostgreSQLClient struct {
 
 	dbs []*sql.DB
 
-	conns [][]*sql.Conn
+	//conns []*sql.Conn
 
-	preparedInsertStatements, preparedSelectStatements map[*sql.Conn]*sql.Stmt
+	preparedInsertStatements, preparedSelectStatements map[int]*sql.Stmt
 }
 
-func NewPostgreSQLClient(schemaMode string, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
+func NewPostgreSQLClient(schemaMode string, writeBatchSize int, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
 	return &PostgreSQLClient{
-		schemaMode: schemaMode,
-		nWorkers:   nWorkers,
+		schemaMode:     schemaMode,
+		writeBatchSize: writeBatchSize,
+		nWorkers:       nWorkers,
 
 		hosts: hosts,
 		port:  port,
 		user:  user,
 
-		dbs:   nil,
-		conns: nil,
+		dbs: nil,
+		//conns: nil,
 
 		preparedInsertStatements: nil,
 		preparedSelectStatements: nil,
@@ -245,9 +251,6 @@ func (psc *PostgreSQLClient) Setup() {
 			if _, err = conn.ExecContext(context.Background(), "CREATE TABLE keyvalue (key VARCHAR PRIMARY KEY, val VARCHAR)"); err != nil {
 				log.Fatal("error when creating table: ", err)
 			}
-			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
-				log.Fatal("recoverable error when truncating table: ", err)
-			}
 
 		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
 			if _, err = conn.ExecContext(context.Background(), "DROP TABLE IF EXISTS keyvalue"); err != nil {
@@ -259,9 +262,6 @@ func (psc *PostgreSQLClient) Setup() {
 			}
 			if _, err = conn.ExecContext(context.Background(), "CREATE INDEX ON keyvalue (val, key)"); err != nil {
 				log.Fatal("error when creating index: ", err)
-			}
-			if _, err = conn.ExecContext(context.Background(), "TRUNCATE TABLE keyvalue"); err != nil {
-				log.Fatalf("error when truncating table: ", err)
 			}
 		} else {
 			panic("logic error: unknown schema mode")
@@ -277,8 +277,8 @@ func (psc *PostgreSQLClient) Setup() {
 	log.Println("schema setup complete")
 
 	psc.dbs = make([]*sql.DB, 0)
-	psc.preparedInsertStatements = make(map[*sql.Conn]*sql.Stmt)
-	psc.preparedSelectStatements = make(map[*sql.Conn]*sql.Stmt)
+	psc.preparedInsertStatements = make(map[int]*sql.Stmt)
+	psc.preparedSelectStatements = make(map[int]*sql.Stmt)
 	for _, host := range psc.hosts {
 		connStr := fmt.Sprintf("host=%s port=%d user=%s dbname=tcsb sslmode=disable", host, psc.port, psc.user)
 		db, err := sql.Open("postgres", connStr)
@@ -289,55 +289,59 @@ func (psc *PostgreSQLClient) Setup() {
 		psc.dbs = append(psc.dbs, db)
 	}
 
-	psc.conns = make([][]*sql.Conn, 0, psc.nWorkers)
+	//psc.conns = make([]*sql.Conn, 0, psc.nWorkers)
 	nConns := 0
-	for i := 0; i < psc.nWorkers; i++ {
-		workerConns := make([]*sql.Conn, 0, len(psc.hosts))
-		for _, db := range psc.dbs {
-			c, err := db.Conn(context.Background())
-			if err != nil {
-				log.Fatal("establishing conn: ", err)
-			}
-			c.PingContext(context.Background())
-			workerConns = append(workerConns, c)
-			nConns++
+	for workerId := 0; workerId < psc.nWorkers; workerId++ {
+		db := psc.dbs[workerId%len(psc.dbs)]
 
-			var insertStmt, selectStmt *sql.Stmt
-
-			if psc.schemaMode == SubScenarioKV {
-				insertStmt, err = c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
-				if err != nil {
-					log.Fatal("failed to prepare insert statement: ", err)
-				}
-				selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
-				if err != nil {
-					log.Fatal("failed to prepare select statement: ", err)
-				}
-			} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
-				insertStmt, err = c.PrepareContext(context.Background(), `INSERT INTO keyvalue (key, val) VALUES ($1, $2)`)
-				if err != nil {
-					log.Fatal("failed to prepare insert statement: ", err)
-				}
-				selectStmt, err = c.PrepareContext(context.Background(), `SELECT key FROM keyvalue WHERE val = $1 LIMIT 1`)
-				if err != nil {
-					log.Fatal("failed to prepare select statement: ", err)
-				}
-			} else {
-				log.Fatal("unknown schema mode")
-			}
-
-			if _, ok := psc.preparedInsertStatements[c]; ok {
-				log.Fatal("logic error: map should not have this entry")
-			}
-			if _, ok := psc.preparedSelectStatements[c]; ok {
-				log.Fatal("logic error: map should not have this entry")
-			}
-			psc.preparedInsertStatements[c] = insertStmt
-			psc.preparedSelectStatements[c] = selectStmt
+		c, err := db.Conn(context.Background())
+		if err != nil {
+			log.Fatal("establishing conn: ", err)
 		}
-		psc.conns = append(psc.conns, workerConns)
-		if i > 0 && i%10 == 0 {
-			log.Printf("%d workers set up", i)
+		c.PingContext(context.Background())
+		nConns++
+
+		var insertStmt, selectStmt *sql.Stmt
+
+		s := `INSERT INTO keyvalue (key, val) VALUES`
+		for paramIdx := 0; paramIdx < psc.writeBatchSize; paramIdx++ {
+			// 1-indexed pairs
+			if paramIdx > 0 {
+				s += ", "
+			}
+			s += fmt.Sprintf(" ($%d, $%d)", (2*paramIdx) + 1, (2*paramIdx)+2)
+			insertStmt, err = c.PrepareContext(context.Background(), s)
+		}
+		println(s)
+		if err != nil {
+			log.Fatal("failed to prepare insert statement: ", err)
+		}
+
+		if psc.schemaMode == SubScenarioKV {
+			selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+			if err != nil {
+				log.Fatal("failed to prepare select statement: ", err)
+			}
+		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
+			//selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+			if err != nil {
+				log.Fatal("failed to prepare select statement: ", err)
+			}
+		} else {
+			log.Fatal("unknown schema mode")
+		}
+
+		if _, ok := psc.preparedInsertStatements[workerId]; ok {
+			log.Fatal("logic error: map should not have this entry")
+		}
+		if _, ok := psc.preparedSelectStatements[workerId]; ok {
+			log.Fatal("logic error: map should not have this entry")
+		}
+		psc.preparedInsertStatements[workerId] = insertStmt
+		psc.preparedSelectStatements[workerId] = selectStmt
+		//psc.conns = append(psc.conns, c)
+		if workerId > 0 && workerId%10 == 0 {
+			log.Printf("%d workers set up", workerId)
 		}
 	}
 	log.Printf("connections established: %d", nConns)
@@ -371,18 +375,19 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Begin PostgreSQL-specific read logic.
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
 
-		myConns := psc.conns[workerId]
-		conn := myConns[nRequests%len(myConns)]
-		preparedStmt := psc.preparedSelectStatements[conn]
+		//conn := psc.conns[workerId]
+		preparedSelectStmt := psc.preparedSelectStatements[workerId]
 		start := time.Now()
-		rows, err := preparedStmt.Query(rr.KeyBytes())
+		// debugging: log.Printf("debug select (workerid=%d): %s\n", workerId, rr.KeyBytes())
+		rows, err := preparedSelectStmt.Query(rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
 		}
-		rows.Next()
-		// N.B. calling rows.Scan on a []byte slice causes the sql library to malloc a new []byte object.
-		valbufpRawBytes := (*sql.RawBytes)(valbufp)
-		rows.Scan(valbufpRawBytes)
+		if rows.Next() {
+			// N.B. calling rows.Scan on a []byte slice causes the sql library to malloc a new []byte object.
+			valbufpRawBytes := (*sql.RawBytes)(valbufp)
+			rows.Scan(valbufpRawBytes)
+		}
 		rows.Close()
 		latencyNanos := uint64(time.Since(start).Nanoseconds())
 		//if ok := rows.Next(); !ok {
@@ -414,17 +419,21 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		bwr.Init(t.Bytes, t.Pos)
 
 		// Begin PostgreSQL-specific write logic.
-		myConns := psc.conns[workerId]
-		conn := myConns[nRequests%len(myConns)]
 		start := time.Now()
 		if psc.schemaMode == SubScenarioKV || psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
-			if bwr.KeyValuePairsLength() != 1 {
-				log.Fatal("kv needs writes of size 1")
+			if bwr.KeyValuePairsLength() != psc.writeBatchSize {
+				log.Fatalf("kv needs writes of size %d (commandline parameter)", psc.writeBatchSize)
 			}
-			kvp := serialized_messages.KeyValuePair{}
-			bwr.KeyValuePairs(&kvp, 0)
-			preparedInsertStmt := psc.preparedInsertStatements[conn]
-			if _, err := preparedInsertStmt.Exec(kvp.KeyBytes(), kvp.ValueBytes()); err != nil {
+			slices := make([]interface{}, 0, psc.writeBatchSize*2)
+			for i := 0; i < bwr.KeyValuePairsLength(); i++ {
+				kvp := serialized_messages.KeyValuePair{}
+				bwr.KeyValuePairs(&kvp, i)
+				slices = append(slices, kvp.KeyBytes())
+				slices = append(slices, kvp.ValueBytes())
+			}
+			preparedInsertStmt := psc.preparedInsertStatements[workerId]
+			//log.Printf("debug insert (workerid=%d): %s %s\n", workerId, kvp.KeyBytes(), kvp.ValueBytes())
+			if _, err := preparedInsertStmt.Exec(slices...); err != nil {
 				log.Fatal("write transaction failed", err)
 			}
 		} else {

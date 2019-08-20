@@ -177,11 +177,7 @@ func (s *KeyValueScenario) NewEmitter(w io.Writer) Emitter {
 
 		if opRead {
 			setKVBacking(1)
-			if s.ReadOpUsesKey {
-				ops.NextReadOp(keys[0])
-			} else {
-				ops.NextReadOp(vals[0])
-			}
+			ops.NextReadOp(keys[0], vals[0])
 			commandsGenerated++
 		} else {
 			setKVBacking(s.WriteBatchSize)
@@ -294,7 +290,7 @@ func emitFlatBuffersKeyValue(builder *flatbuffers.Builder, i int64, w io.Writer,
 }
 
 type KeyValueOpGen interface {
-	NextReadOp([]byte)
+	NextReadOp([]byte, []byte)
 	NextWriteOp([]byte, []byte)
 }
 
@@ -319,7 +315,7 @@ func NewRandomOpGen(opSeed int64) *RandomOpGen {
 	}
 }
 
-func (rog *RandomOpGen) NextReadOp(dstkey []byte) {
+func (rog *RandomOpGen) NextReadOp(dstkey, dstval []byte) {
 	if rog.NWritten <= 0 {
 		panic("logic error: cannot call NextReadOp until NextWriteOp has been called at least once")
 	}
@@ -330,6 +326,7 @@ func (rog *RandomOpGen) NextReadOp(dstkey []byte) {
 	// been used in a write op beforehand.
 	r := rand.New(rand.NewSource(rog.DataGenSeed + seqNo + 1))
 	randAscii(r, dstkey)
+	randAscii(r, dstval)
 
 	rog.NTotal++
 }
@@ -371,7 +368,7 @@ func NewOrderedOpGen(opSeed int64) *OrderedOpGen {
 	}
 }
 
-func (oog *OrderedOpGen) NextReadOp(dstkey []byte) {
+func (oog *OrderedOpGen) NextReadOp(dstkey, dstval []byte) {
 	if oog.NWritten <= 0 {
 		panic("logic error: cannot call NextReadOp until NextWriteOp has been called at least once")
 	}
@@ -381,6 +378,11 @@ func (oog *OrderedOpGen) NextReadOp(dstkey []byte) {
 	// Use the sequence number to regenerate the key byte slice.
 	// Guaranteed to have been used in a write op beforehand.
 	seqAscii(uint64(seqNo), dstkey)
+
+	// Use the seed and the sequance number to generate the value byte slice.
+	// Guaranteed to be the same as emitted previously.
+	r := rand.New(rand.NewSource(oog.DataGenSeed + seqNo + 1))
+	randAscii(r, dstval)
 
 	oog.NTotal++
 }

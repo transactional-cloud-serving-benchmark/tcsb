@@ -177,7 +177,8 @@ type PostgreSQLClient struct {
 
 	//conns []*sql.Conn
 
-	preparedInsertStatements, preparedSelectStatements map[int]*sql.Stmt
+	//preparedInsertStatements, preparedSelectStatements map[int]*sql.Stmt
+	preparedInsertStatements, preparedSelectStatements *sync.Map
 }
 
 func NewPostgreSQLClient(schemaMode string, writeBatchSize int, hosts []string, port int, user string, nWorkers int) *PostgreSQLClient {
@@ -277,8 +278,8 @@ func (psc *PostgreSQLClient) Setup() {
 	log.Println("schema setup complete")
 
 	psc.dbs = make([]*sql.DB, 0)
-	psc.preparedInsertStatements = make(map[int]*sql.Stmt)
-	psc.preparedSelectStatements = make(map[int]*sql.Stmt)
+	psc.preparedInsertStatements = &sync.Map{}
+	psc.preparedSelectStatements = &sync.Map{}
 	for _, host := range psc.hosts {
 		connStr := fmt.Sprintf("host=%s port=%d user=%s dbname=tcsb sslmode=disable", host, psc.port, psc.user)
 		db, err := sql.Open("postgres", connStr)
@@ -290,60 +291,64 @@ func (psc *PostgreSQLClient) Setup() {
 	}
 
 	//psc.conns = make([]*sql.Conn, 0, psc.nWorkers)
-	nConns := 0
+	prepareWg := &sync.WaitGroup{}
 	for workerId := 0; workerId < psc.nWorkers; workerId++ {
-		db := psc.dbs[workerId%len(psc.dbs)]
+		prepareWg.Add(1)
+		go func(workerId int) {
+			db := psc.dbs[workerId%len(psc.dbs)]
 
-		c, err := db.Conn(context.Background())
-		if err != nil {
-			log.Fatal("establishing conn: ", err)
-		}
-		c.PingContext(context.Background())
-		nConns++
-
-		var insertStmt, selectStmt *sql.Stmt
-		s := `INSERT INTO keyvalue (key, val) VALUES`
-		for paramIdx := 0; paramIdx < psc.writeBatchSize; paramIdx++ {
-			// 1-indexed pairs
-			if paramIdx > 0 {
-				s += ", "
-			}
-			s += fmt.Sprintf(" ($%d, $%d)", (2*paramIdx) + 1, (2*paramIdx)+2)
-		}
-		insertStmt, err = c.PrepareContext(context.Background(), s)
-		println(s)
-		if err != nil {
-			log.Fatal("failed to prepare insert statement: ", err)
-		}
-
-		if psc.schemaMode == SubScenarioKV {
-			selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+			c, err := db.Conn(context.Background())
 			if err != nil {
-				log.Fatal("failed to prepare select statement: ", err)
+				log.Fatal("establishing conn: ", err)
 			}
-		} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
-			selectStmt, err = c.PrepareContext(context.Background(), `SELECT key FROM keyvalue WHERE val = $1 LIMIT 1`)
-			if err != nil {
-				log.Fatal("failed to prepare select statement: ", err)
-			}
-		} else {
-			log.Fatal("unknown schema mode")
-		}
+			c.PingContext(context.Background())
 
-		if _, ok := psc.preparedInsertStatements[workerId]; ok {
-			log.Fatal("logic error: map should not have this entry")
-		}
-		if _, ok := psc.preparedSelectStatements[workerId]; ok {
-			log.Fatal("logic error: map should not have this entry")
-		}
-		psc.preparedInsertStatements[workerId] = insertStmt
-		psc.preparedSelectStatements[workerId] = selectStmt
-		//psc.conns = append(psc.conns, c)
-		if workerId > 0 && workerId%10 == 0 {
-			log.Printf("%d workers set up", workerId)
-		}
+			var insertStmt, selectStmt *sql.Stmt
+			s := `INSERT INTO keyvalue (key, val) VALUES`
+			for paramIdx := 0; paramIdx < psc.writeBatchSize; paramIdx++ {
+				// 1-indexed pairs
+				if paramIdx > 0 {
+					s += ", "
+				}
+				s += fmt.Sprintf(" ($%d, $%d)", (2*paramIdx) + 1, (2*paramIdx)+2)
+			}
+			insertStmt, err = c.PrepareContext(context.Background(), s)
+			if err != nil {
+				log.Fatal("failed to prepare insert statement: ", err)
+			}
+			println(s)
+
+			if psc.schemaMode == SubScenarioKV {
+				selectStmt, err = c.PrepareContext(context.Background(), `SELECT val FROM keyvalue WHERE key = $1 LIMIT 1`)
+				if err != nil {
+					log.Fatal("failed to prepare select statement: ", err)
+				}
+			} else if psc.schemaMode == SubScenarioKVWithSecondaryIndexLookup {
+				selectStmt, err = c.PrepareContext(context.Background(), `SELECT key FROM keyvalue WHERE val = $1 LIMIT 1`)
+				if err != nil {
+					log.Fatal("failed to prepare select statement: ", err)
+				}
+			} else {
+				log.Fatal("unknown schema mode")
+			}
+
+			if _, ok := psc.preparedInsertStatements.Load(workerId); ok {
+				log.Fatal("logic error: map should not have this entry")
+			}
+			if _, ok := psc.preparedSelectStatements.Load(workerId); ok {
+				log.Fatal("logic error: map should not have this entry")
+			}
+			psc.preparedInsertStatements.Store(workerId, insertStmt)
+			psc.preparedSelectStatements.Store(workerId, selectStmt)
+			//psc.conns = append(psc.conns, c)
+			if workerId > 0 && workerId%10 == 0 {
+				log.Printf("%d workers set up", workerId)
+			}
+			prepareWg.Done()
+		}(workerId)
+		prepareWg.Wait()
 	}
-	log.Printf("connections established: %d", nConns)
+	log.Printf("connections established: %d", psc.nWorkers)
 }
 
 func (psc *PostgreSQLClient) Teardown() {
@@ -375,10 +380,10 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 		// Choose a random host (keepalive/connection pooling happens like normal within each connection).
 
 		//conn := psc.conns[workerId]
-		preparedSelectStmt := psc.preparedSelectStatements[workerId]
+		preparedSelectStmt, _ := psc.preparedSelectStatements.Load(workerId) // known to be present
 		start := time.Now()
 		// debugging: log.Printf("debug select (workerid=%d): %s\n", workerId, rr.KeyBytes())
-		rows, err := preparedSelectStmt.Query(rr.KeyBytes())
+		rows, err := preparedSelectStmt.(*sql.Stmt).Query(rr.KeyBytes())
 		if err != nil {
 			log.Fatal("error during SELECT query: ", err)
 		}
@@ -430,9 +435,9 @@ func (psc *PostgreSQLClient) HandleRequestResponse(builder *flatbuffers.Builder,
 				slices = append(slices, kvp.KeyBytes())
 				slices = append(slices, kvp.ValueBytes())
 			}
-			preparedInsertStmt := psc.preparedInsertStatements[workerId]
+			preparedInsertStmt, _ := psc.preparedInsertStatements.Load(workerId) // known to be present
 			//log.Printf("debug insert (workerid=%d): %s %s\n", workerId, kvp.KeyBytes(), kvp.ValueBytes())
-			if _, err := preparedInsertStmt.Exec(slices...); err != nil {
+			if _, err := preparedInsertStmt.(*sql.Stmt).Exec(slices...); err != nil {
 				log.Fatal("write transaction failed", err)
 			}
 		} else {

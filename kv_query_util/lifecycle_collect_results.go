@@ -90,6 +90,7 @@ func (rc *ReplyCollector) Update(reply serialized_messages.Reply) {
 			if rc.burnins >= rc.nBurnIn {
 				rc.doingBurnIn = false
 				// Reset statistics timer when burn-in is complete:
+				log.Print("burn-in complete, resetting timer")
 				rc.start = time.Now()
 			}
 		} else {
@@ -126,6 +127,7 @@ func (rc *ReplyCollector) Update(reply serialized_messages.Reply) {
 			if rc.burnins >= rc.nBurnIn {
 				rc.doingBurnIn = false
 				// Reset statistics timer when burn-in is complete:
+				log.Print("burn-in complete, resetting timer")
 				rc.start = time.Now()
 			}
 		} else {
